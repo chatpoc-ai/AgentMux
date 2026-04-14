@@ -31,7 +31,43 @@
     <nav id="tabs" class="tabs" aria-label="终端列表"></nav>
 
     <main class="main">
-      <div id="terminalHost"></div>
+      <div class="split">
+        <div id="terminalHost"></div>
+        <aside class="event-panel" aria-label="事件总线">
+          <h2 class="event-title">事件总线</h2>
+          <pre id="eventLog" class="event-log" title="最近事件"></pre>
+          <div class="event-form">
+            <label class="ev-row">
+              类型
+              <input id="evType" type="text" value="ping" />
+            </label>
+            <label class="ev-row">
+              目标终端
+              <select id="evTo"></select>
+            </label>
+            <label class="ev-row ev-text-label">注入文本（可选）</label>
+            <textarea
+              id="evText"
+              rows="3"
+              placeholder="有 text 时向目标 tmux 注入；留空则仅广播并转发 payload 行"
+            ></textarea>
+            <label class="ev-check">
+              <input type="checkbox" id="evAppendEnter" checked />
+              末尾发送 Enter
+            </label>
+            <button type="button" id="btnEmit">发送事件</button>
+          </div>
+          <details class="event-hint">
+            <summary>终端如何上报事件</summary>
+            <p>
+              在终端打印一行（会被解析为事件，不显示在终端画面）：
+              <code>AGENTMUX_EVENT:{"type":"done","to":"…","payload":{}}</code>
+            </p>
+            <p>或用 curl 调 HTTP：</p>
+            <pre id="curlHint"></pre>
+          </details>
+        </aside>
+      </div>
       <div id="status" class="status" role="status"></div>
     </main>
 

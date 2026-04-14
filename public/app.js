@@ -29,6 +29,13 @@ function main() {
   const btnShutdown = document.getElementById("btnShutdown");
   const tabsEl = document.getElementById("tabs");
   const terminalHost = document.getElementById("terminalHost");
+  const eventLog = document.getElementById("eventLog");
+  const evType = document.getElementById("evType");
+  const evTo = document.getElementById("evTo");
+  const evText = document.getElementById("evText");
+  const evAppendEnter = document.getElementById("evAppendEnter");
+  const btnEmit = document.getElementById("btnEmit");
+  const curlHint = document.getElementById("curlHint");
 
   /** @type {WebSocket | null} */
   let ws = null;
@@ -37,6 +44,10 @@ function main() {
 
   /** @type {string | null} */
   let groupId = null;
+  /** @type {string} */
+  let eventToken = "";
+  /** @type {string} */
+  let eventHttpUrl = "";
   /** @type {{ id: string, index: number }[]} */
   let terminals = [];
   /** @type {string | null} */
@@ -52,6 +63,36 @@ function main() {
   function setStatus(msg, isError = false) {
     statusEl.textContent = msg;
     statusEl.classList.toggle("error", isError);
+  }
+
+  function refreshEvToSelect() {
+    if (!evTo) return;
+    evTo.innerHTML = "";
+    for (const t of terminals) {
+      const opt = document.createElement("option");
+      opt.value = t.id;
+      opt.textContent = `终端 ${t.index + 1}`;
+      evTo.appendChild(opt);
+    }
+  }
+
+  function updateCurlHint() {
+    if (!curlHint || !groupId) return;
+    const first = terminals[0]?.id ?? "amux_…";
+    const tok = eventToken || "(启动后显示 token)";
+    const url = eventHttpUrl || `${window.location.origin}/api/events`;
+    curlHint.textContent = `curl -sS -X POST ${url} \\
+  -H "Content-Type: application/json" \\
+  -H "X-AgentMux-Token: ${tok}" \\
+  -d '{"groupId":"${groupId}","type":"done","from":"${first}","payload":{}}'`;
+  }
+
+  function appendEventLog(ev) {
+    if (!eventLog) return;
+    const line = JSON.stringify(ev);
+    const next = (eventLog.textContent ? `${eventLog.textContent}\n` : "") + line;
+    eventLog.textContent = next.slice(-12000);
+    eventLog.scrollTop = eventLog.scrollHeight;
   }
 
   function wsUrl() {
@@ -181,6 +222,7 @@ function main() {
       activeId = null;
       if (term) term.reset();
     }
+    refreshEvToSelect();
   }
 
   /**
@@ -206,7 +248,10 @@ function main() {
       groupId = null;
       terminals = [];
       activeId = null;
+      eventToken = "";
+      eventHttpUrl = "";
       scrollback.clear();
+      if (eventLog) eventLog.textContent = "";
       btnAdd.disabled = true;
       btnShutdown.disabled = true;
       renderTabs();
@@ -224,6 +269,8 @@ function main() {
       switch (msg.type) {
         case "ready":
           groupId = msg.groupId;
+          eventToken = String(msg.eventToken ?? "");
+          eventHttpUrl = String(msg.eventHttpUrl ?? "");
           terminals = (msg.terminals || []).map((x) => ({
             id: x.id,
             index: x.index,
@@ -236,6 +283,7 @@ function main() {
             `就绪 · ${msg.terminals?.length ?? 0} 个会话 · agent: ${msg.agentBin ?? "agent"}`,
           );
           renderTabs();
+          updateCurlHint();
           break;
         case "terminal_added": {
           const t = msg.terminal;
@@ -245,6 +293,7 @@ function main() {
           setStatus(`已新增终端 ${t.index + 1}`);
           renderTabs();
           setActive(t.id);
+          updateCurlHint();
           break;
         }
         case "terminal_closed": {
@@ -256,10 +305,14 @@ function main() {
           if (terminals.length) {
             setActive(terminals[0].id);
           }
+          updateCurlHint();
           break;
         }
         case "output":
           appendOutput(msg.terminalId, msg.data ?? "");
+          break;
+        case "bus_event":
+          appendEventLog(msg.event ?? {});
           break;
         case "error":
           setStatus(msg.message || "错误", true);
@@ -268,7 +321,10 @@ function main() {
           groupId = null;
           terminals = [];
           activeId = null;
+          eventToken = "";
+          eventHttpUrl = "";
           scrollback.clear();
+          if (eventLog) eventLog.textContent = "";
           btnAdd.disabled = true;
           btnShutdown.disabled = true;
           renderTabs();
@@ -319,6 +375,24 @@ function main() {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
     ws.send(JSON.stringify({ type: "shutdown" }));
   });
+
+  if (btnEmit) {
+    btnEmit.addEventListener("click", () => {
+      if (!ws || ws.readyState !== WebSocket.OPEN || !groupId) return;
+      const type = (evType && evType.value.trim()) || "event";
+      const to = evTo && evTo.value ? String(evTo.value) : undefined;
+      const textRaw = evText ? evText.value : "";
+      const appendEnter = !!(evAppendEnter && evAppendEnter.checked);
+      /** @type {Record<string, unknown>} */
+      const event = { type };
+      if (to) event.to = to;
+      if (textRaw.length) {
+        event.text = textRaw;
+        event.appendEnter = appendEnter;
+      }
+      ws.send(JSON.stringify({ type: "emit_event", event }));
+    });
+  }
 
   window.addEventListener("beforeunload", () => {
     if (ws && ws.readyState === WebSocket.OPEN) {

@@ -8,10 +8,15 @@ const { randomUUID } = require("crypto");
 const { spawn, execFileSync } = require("child_process");
 const express = require("express");
 const WebSocket = require("ws");
+const { parseEventLine, formatEventLine } = require("./event-bus");
 
 const PORT = Number(process.env.PORT) || 9988;
 const PUBLIC_DIR = path.join(__dirname, "..", "public");
 const NODE_MODULES = path.join(__dirname, "..", "node_modules");
+
+/** 与 HTTP /api/events 及终端内 curl 共用；生产环境务必设置 AGENTMUX_TOKEN */
+const EVENT_TOKEN =
+  process.env.AGENTMUX_TOKEN || "dev-insecure-change-me";
 
 /** @param {string} p */
 function shSingleQuote(p) {
@@ -52,6 +57,8 @@ class TerminalSession {
     this.name = safeSessionName(groupId, index);
     /** @type {import('child_process').ChildProcess | null} */
     this.tail = null;
+    /** tail 按行解析事件时未完结的缓冲 */
+    this.lineBuffer = "";
   }
 }
 
@@ -67,6 +74,100 @@ class AgentMuxServer {
     const ws = this.clients.get(groupId);
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify(msg));
+    }
+  }
+
+  /**
+   * @param {string} groupId
+   * @param {string} sourceTerminalId 来源 tmux 会话名或 "browser" / "http"
+   * @param {object} raw
+   */
+  emitEvent(groupId, sourceTerminalId, raw) {
+    const ev = {
+      type: raw.type || "event",
+      from: raw.from ?? sourceTerminalId,
+      to: raw.to,
+      text: raw.text,
+      payload: raw.payload,
+      appendEnter: raw.appendEnter,
+    };
+    const enriched = {
+      ...ev,
+      id: randomUUID(),
+      ts: Date.now(),
+    };
+    this.broadcast(groupId, { type: "bus_event", event: enriched });
+
+    const to = ev.to;
+    if (!to || typeof to !== "string") return;
+    const list = this.groups.get(groupId);
+    if (!list?.some((t) => t.name === to)) return;
+
+    if (ev.text !== undefined && ev.text !== null) {
+      this.sendTextToTerminal(
+        groupId,
+        to,
+        String(ev.text),
+        ev.appendEnter !== false,
+      );
+    } else {
+      const forward = {
+        type: ev.type,
+        from: ev.from,
+        payload: ev.payload,
+      };
+      const line = formatEventLine(forward);
+      this.sendTextToTerminal(groupId, to, line, true);
+    }
+  }
+
+  /**
+   * @param {string} groupId
+   * @param {string} terminalId
+   * @param {string} text
+   * @param {boolean} appendEnter 是否在末尾多一次 Enter
+   */
+  sendTextToTerminal(groupId, terminalId, text, appendEnter) {
+    const list = this.groups.get(groupId);
+    const term = list?.find((t) => t.name === terminalId);
+    if (!term) return;
+    const target = `${term.name}:0`;
+    const lines = text.split("\n");
+    for (let i = 0; i < lines.length; i++) {
+      tmux(["send-keys", "-t", target, "-l", lines[i]]);
+      if (i < lines.length - 1) {
+        tmux(["send-keys", "-t", target, "Enter"]);
+      }
+    }
+    if (appendEnter) {
+      tmux(["send-keys", "-t", target, "Enter"]);
+    }
+  }
+
+  /**
+   * @param {string} groupId
+   * @param {TerminalSession} term
+   * @param {Buffer} chunk
+   */
+  processTailChunk(groupId, term, chunk) {
+    term.lineBuffer += chunk.toString("utf8");
+    const parts = term.lineBuffer.split("\n");
+    term.lineBuffer = parts.pop() ?? "";
+    let out = "";
+    for (const line of parts) {
+      const ev = parseEventLine(line);
+      if (ev) {
+        this.emitEvent(groupId, term.name, ev);
+      } else {
+        out += line + "\n";
+      }
+    }
+    if (out) {
+      this.broadcast(groupId, {
+        type: "output",
+        terminalId: term.name,
+        data: out,
+      });
     }
   }
 
@@ -91,6 +192,8 @@ class AgentMuxServer {
       groupId,
       cwd,
       agentBin: AGENT_BIN,
+      eventToken: EVENT_TOKEN,
+      eventHttpUrl: `http://127.0.0.1:${PORT}/api/events`,
       terminals: list.map((t) => ({
         id: t.name,
         index: t.index,
@@ -130,11 +233,7 @@ class AgentMuxServer {
     });
     term.tail = tail;
     tail.stdout.on("data", (buf) => {
-      this.broadcast(groupId, {
-        type: "output",
-        terminalId: term.name,
-        data: buf.toString("utf8"),
-      });
+      this.processTailChunk(groupId, term, buf);
     });
     tail.stderr.on("data", (buf) => {
       this.broadcast(groupId, {
@@ -265,6 +364,38 @@ app.get("/api/health", (_req, res) => {
   res.json({ ok: true, agentBin: AGENT_BIN });
 });
 
+app.post(
+  "/api/events",
+  express.json({ limit: "64kb" }),
+  (req, res) => {
+    const hdr = req.headers["x-agentmux-token"];
+    const token =
+      (typeof hdr === "string" && hdr) ||
+      (typeof req.query.token === "string" && req.query.token) ||
+      "";
+    if (token !== EVENT_TOKEN) {
+      res.status(401).json({ ok: false, error: "unauthorized" });
+      return;
+    }
+    const { groupId, type, from, to, text, payload, appendEnter } =
+      req.body || {};
+    const gid = groupId && String(groupId);
+    if (!gid || !mux.groups.has(gid)) {
+      res.status(404).json({ ok: false, error: "unknown_group" });
+      return;
+    }
+    const source = from != null ? String(from) : "http";
+    mux.emitEvent(gid, source, {
+      type,
+      to,
+      text,
+      payload,
+      appendEnter,
+    });
+    res.json({ ok: true });
+  },
+);
+
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server, path: "/ws" });
 
@@ -322,6 +453,13 @@ wss.on("connection", (ws) => {
         mux.closeTerminal(groupId, String(msg.terminalId || ""));
         break;
       }
+      case "emit_event": {
+        const ev = msg.event && typeof msg.event === "object" ? msg.event : {};
+        const from =
+          (msg.fromTerminalId && String(msg.fromTerminalId)) || "browser";
+        mux.emitEvent(groupId, from, ev);
+        break;
+      }
       case "shutdown": {
         mux.destroyGroup(groupId);
         mux.clients.delete(groupId);
@@ -364,4 +502,12 @@ server.on("error", (err) => {
 server.listen(PORT, "127.0.0.1", () => {
   console.log(`AgentMux listening on http://127.0.0.1:${PORT}`);
   console.log(`Resolved agent binary: ${AGENT_BIN}`);
+  console.log(
+    `Event bus: POST /api/events  Header: X-AgentMux-Token: <token>  (set AGENTMUX_TOKEN env)`,
+  );
+  if (!process.env.AGENTMUX_TOKEN) {
+    console.warn(
+      `Using default AGENTMUX_TOKEN (dev only): ${EVENT_TOKEN}`,
+    );
+  }
 });
