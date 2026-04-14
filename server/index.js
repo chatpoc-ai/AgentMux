@@ -13,6 +13,7 @@ const {
   loadInstructionTemplate,
   expandTemplate,
   buildPromptVars,
+  getAgentFlagParts,
   writeAgentBootstrapScript,
   shSingleQuote,
 } = require("./instruction");
@@ -242,6 +243,7 @@ class AgentMuxServer {
       sessionName: name,
       apiBase,
       promptBody: expanded,
+      agentFlagParts: getAgentFlagParts(),
     });
 
     const runLine = `sh ${shSingleQuote(scriptPath)}`;
@@ -535,6 +537,12 @@ server.listen(PORT, "127.0.0.1", () => {
   } else {
     console.log(
       "Agent instruction: (built-in default; add config/agent-instruction.md to customize)",
+    );
+  }
+  {
+    const parts = getAgentFlagParts();
+    console.log(
+      `Agent CLI extra args: ${parts.length ? parts.join(" ") : "(none)"}  (unset env → default --yolo auto-approve; AGENTMUX_AGENT_FLAGS= for shell prompts)`,
     );
   }
   console.log(

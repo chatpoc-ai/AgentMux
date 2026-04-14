@@ -59,6 +59,27 @@ function buildPromptVars(o) {
 }
 
 /**
+ * Cursor CLI：`agent --yolo` / `--force` 可少掉「Run this command?」确认。
+ * - 未设置环境变量：默认 `--yolo`
+ * - `AGENTMUX_AGENT_FLAGS=` 空：不加参数（恢复每次确认）
+ * - 自定义：`AGENTMUX_AGENT_FLAGS=--force` 等
+ * @returns {string[]}
+ */
+function getAgentFlagParts() {
+  if (
+    !Object.prototype.hasOwnProperty.call(
+      process.env,
+      "AGENTMUX_AGENT_FLAGS",
+    )
+  ) {
+    return ["--yolo"];
+  }
+  const t = String(process.env.AGENTMUX_AGENT_FLAGS ?? "").trim();
+  if (!t) return [];
+  return t.split(/\s+/).filter(Boolean);
+}
+
+/**
  * 单文件启动脚本：heredoc 内嵌 instruction，避免 tmux paste / 独立 prompt 文件的竞态或路径丢失。
  * @param {object} o
  * @param {string} o.baseDir
@@ -68,6 +89,7 @@ function buildPromptVars(o) {
  * @param {string} o.sessionName
  * @param {string} o.apiBase
  * @param {string} o.promptBody
+ * @param {string[]} [o.agentFlagParts] 传给 agent 的额外参数（如 --yolo）
  * @returns {string} 可执行脚本绝对路径
  */
 function writeAgentBootstrapScript(o) {
@@ -82,12 +104,18 @@ function writeAgentBootstrapScript(o) {
     }
   }
 
+  const flags = o.agentFlagParts || [];
+  const flagQ = flags.map((f) => JSON.stringify(f)).join(" ");
+  const execHead = flagQ
+    ? `exec ${JSON.stringify(o.agentBin)} ${flagQ} "$(cat <<'${delim}'`
+    : `exec ${JSON.stringify(o.agentBin)} "$(cat <<'${delim}'`;
+
   const content = `#!/bin/sh
 set -e
 export AGENTMUX_GROUP_ID=${shSingleQuote(o.groupId)}
 export AGENTMUX_SESSION_ID=${shSingleQuote(o.sessionName)}
 export AGENTMUX_API_BASE=${shSingleQuote(o.apiBase)}
-exec ${JSON.stringify(o.agentBin)} "$(cat <<'${delim}'
+${execHead}
 ${promptBody}
 ${delim}
 )"
@@ -100,6 +128,7 @@ module.exports = {
   loadInstructionTemplate,
   expandTemplate,
   buildPromptVars,
+  getAgentFlagParts,
   writeAgentBootstrapScript,
   shSingleQuote,
   DEFAULT_INSTRUCTION,

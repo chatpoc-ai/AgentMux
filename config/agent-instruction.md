@@ -50,3 +50,7 @@ Use `curl` from this shell if needed. Set `Content-Type: application/json`.
 - Keep stdout event lines **valid JSON** after the `AGENTMUX_EVENT:` prefix.
 
 Working directory for this session: `{{CWD}}`.
+
+## Cursor CLI command approval
+
+The orchestrator starts `agent` with **`--yolo`** by default (same idea as **`--force`**: auto-approve shell commands so you are not blocked on every `echo`/`curl`). To require confirmation for each command instead, start the AgentMux server with **`AGENTMUX_AGENT_FLAGS=`** (empty). Override with e.g. **`AGENTMUX_AGENT_FLAGS=--force`** if you prefer that flag.
