@@ -10,7 +10,11 @@ You are running **inside AgentMux** (a multi-tmux orchestrator). The human contr
 
 ## 1) Report via stdout (preferred for short signals)
 
-Print **exactly one line** to stdout (it will be parsed and **not** shown as normal terminal spam):
+Print **exactly one line** to the **session TTY** (e.g. `echo 'AGENTMUX_EVENT:…'` in the shell). The orchestrator reads the tmux pane log; lines that parse successfully are **not** duplicated as raw terminal spam in the web UI.
+
+If you emit from a context whose output does **not** reach the pane log, use **HTTP** (section 2) instead.
+
+Format (single line):
 
 ```text
 AGENTMUX_EVENT:{"type":"<name>","payload":{...}}
