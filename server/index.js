@@ -9,10 +9,17 @@ const { spawn, execFileSync } = require("child_process");
 const express = require("express");
 const WebSocket = require("ws");
 const { parseEventLine, formatEventLine } = require("./event-bus");
+const {
+  loadInstructionTemplate,
+  expandTemplate,
+  buildPromptVars,
+  buildZshLaunchLine,
+} = require("./instruction");
 
 const PORT = Number(process.env.PORT) || 9988;
-const PUBLIC_DIR = path.join(__dirname, "..", "public");
-const NODE_MODULES = path.join(__dirname, "..", "node_modules");
+const REPO_ROOT = path.join(__dirname, "..");
+const PUBLIC_DIR = path.join(REPO_ROOT, "public");
+const NODE_MODULES = path.join(REPO_ROOT, "node_modules");
 
 /** 与 HTTP /api/events 及终端内 curl 共用；生产环境务必设置 AGENTMUX_TOKEN */
 const EVENT_TOKEN =
@@ -221,7 +228,34 @@ class AgentMuxServer {
 
     this._startTail(groupId, term);
 
-    tmux(["send-keys", "-t", `${name}:0`, "-l", AGENT_BIN]);
+    const cwdResolved = path.resolve(cwd);
+    const template = loadInstructionTemplate();
+    const vars = buildPromptVars({
+      groupId,
+      cwdResolved,
+      sessionName: name,
+      port: PORT,
+    });
+    const expanded = expandTemplate(template, vars);
+    const promptPath = path.join(baseDir, `agent_prompt_${index}.txt`);
+    fs.writeFileSync(promptPath, expanded, "utf8");
+
+    const exportLines = [
+      `export AGENTMUX_GROUP_ID=${shSingleQuote(groupId)}`,
+      `export AGENTMUX_SESSION_ID=${shSingleQuote(name)}`,
+      `export AGENTMUX_API_BASE=http://127.0.0.1:${PORT}`,
+    ];
+    for (const line of exportLines) {
+      tmux(["send-keys", "-t", `${name}:0`, "-l", line]);
+      tmux(["send-keys", "-t", `${name}:0`, "Enter"]);
+    }
+
+    const launchLine = buildZshLaunchLine(AGENT_BIN, promptPath);
+    const launchPath = path.join(baseDir, `agent_launch_${index}.txt`);
+    fs.writeFileSync(launchPath, `${launchLine}\n`, "utf8");
+    const bufName = `b${randomUUID().replace(/-/g, "").slice(0, 16)}`;
+    tmux(["load-buffer", "-b", bufName, launchPath]);
+    tmux(["paste-buffer", "-t", `${name}:0`, "-b", bufName, "-d"]);
     tmux(["send-keys", "-t", `${name}:0`, "Enter"]);
 
     return term;
@@ -502,6 +536,17 @@ server.on("error", (err) => {
 server.listen(PORT, "127.0.0.1", () => {
   console.log(`AgentMux listening on http://127.0.0.1:${PORT}`);
   console.log(`Resolved agent binary: ${AGENT_BIN}`);
+  const instCustom = process.env.AGENTMUX_AGENT_INSTRUCTION_FILE;
+  const instDefault = path.join(REPO_ROOT, "config", "agent-instruction.md");
+  if (instCustom && fs.existsSync(instCustom)) {
+    console.log(`Agent instruction file: ${instCustom}`);
+  } else if (fs.existsSync(instDefault)) {
+    console.log(`Agent instruction file: ${instDefault}`);
+  } else {
+    console.log(
+      "Agent instruction: (built-in default; add config/agent-instruction.md to customize)",
+    );
+  }
   console.log(
     `Event bus: POST /api/events  Header: X-AgentMux-Token: <token>  (set AGENTMUX_TOKEN env)`,
   );

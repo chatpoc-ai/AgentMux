@@ -24,7 +24,9 @@
         <button id="btnShutdown" type="button" disabled>关闭全部</button>
       </div>
       <p class="hint">
-        每个标签对应一个 tmux 会话，启动后自动执行 <code>agent</code>。在下方终端按键即发送到当前会话。
+        每个标签对应一个 tmux 会话；启动后会注入环境变量并带
+        <code>config/agent-instruction.md</code>
+        作为 Cursor agent 的首条指令（上报协议、确认流程）。终端按键即发送到当前会话。
       </p>
     </header>
 
