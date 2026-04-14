@@ -1,0 +1,4 @@
+node_modules/
+.agentmux.pid
+agentmux.log
+.DS_Store
