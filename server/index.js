@@ -13,7 +13,8 @@ const {
   loadInstructionTemplate,
   expandTemplate,
   buildPromptVars,
-  buildZshLaunchLine,
+  writeAgentBootstrapScript,
+  shSingleQuote,
 } = require("./instruction");
 
 const PORT = Number(process.env.PORT) || 9988;
@@ -24,11 +25,6 @@ const NODE_MODULES = path.join(REPO_ROOT, "node_modules");
 /** 与 HTTP /api/events 及终端内 curl 共用；生产环境务必设置 AGENTMUX_TOKEN */
 const EVENT_TOKEN =
   process.env.AGENTMUX_TOKEN || "dev-insecure-change-me";
-
-/** @param {string} p */
-function shSingleQuote(p) {
-  return `'${String(p).replace(/'/g, `'\\''`)}'`;
-}
 
 /** @param {string[]} args */
 function tmux(args, opts = {}) {
@@ -237,25 +233,19 @@ class AgentMuxServer {
       port: PORT,
     });
     const expanded = expandTemplate(template, vars);
-    const promptPath = path.join(baseDir, `agent_prompt_${index}.txt`);
-    fs.writeFileSync(promptPath, expanded, "utf8");
+    const apiBase = `http://127.0.0.1:${PORT}`;
+    const scriptPath = writeAgentBootstrapScript({
+      baseDir,
+      index,
+      agentBin: AGENT_BIN,
+      groupId,
+      sessionName: name,
+      apiBase,
+      promptBody: expanded,
+    });
 
-    const exportLines = [
-      `export AGENTMUX_GROUP_ID=${shSingleQuote(groupId)}`,
-      `export AGENTMUX_SESSION_ID=${shSingleQuote(name)}`,
-      `export AGENTMUX_API_BASE=http://127.0.0.1:${PORT}`,
-    ];
-    for (const line of exportLines) {
-      tmux(["send-keys", "-t", `${name}:0`, "-l", line]);
-      tmux(["send-keys", "-t", `${name}:0`, "Enter"]);
-    }
-
-    const launchLine = buildZshLaunchLine(AGENT_BIN, promptPath);
-    const launchPath = path.join(baseDir, `agent_launch_${index}.txt`);
-    fs.writeFileSync(launchPath, `${launchLine}\n`, "utf8");
-    const bufName = `b${randomUUID().replace(/-/g, "").slice(0, 16)}`;
-    tmux(["load-buffer", "-b", bufName, launchPath]);
-    tmux(["paste-buffer", "-t", `${name}:0`, "-b", bufName, "-d"]);
+    const runLine = `sh ${shSingleQuote(scriptPath)}`;
+    tmux(["send-keys", "-t", `${name}:0`, "-l", runLine]);
     tmux(["send-keys", "-t", `${name}:0`, "Enter"]);
 
     return term;
