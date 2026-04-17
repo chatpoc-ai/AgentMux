@@ -5,6 +5,8 @@ ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT"
 
 PORT="${PORT:-9988}"
+# Cursor agent: server defaults to --yolo (auto-run shell). To restore per-command prompts:
+#   export AGENTMUX_AGENT_FLAGS=
 PIDFILE="${ROOT}/.agentmux.pid"
 LOGFILE="${ROOT}/agentmux.log"
 

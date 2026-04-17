@@ -24,14 +24,57 @@
         <button id="btnShutdown" type="button" disabled>关闭全部</button>
       </div>
       <p class="hint">
-        每个标签对应一个 tmux 会话，启动后自动执行 <code>agent</code>。在下方终端按键即发送到当前会话。
+        每个标签对应一个 tmux 会话；启动后会注入环境变量并带
+        <code>config/agent-instruction.md</code>
+        作为 Cursor agent 的首条指令（上报协议、确认流程）。终端按键即发送到当前会话。
       </p>
     </header>
 
     <nav id="tabs" class="tabs" aria-label="终端列表"></nav>
 
     <main class="main">
-      <div id="terminalHost"></div>
+      <div class="split">
+        <div id="terminalHost"></div>
+        <aside class="event-panel" aria-label="事件总线">
+          <h2 class="event-title">事件总线</h2>
+          <div
+            id="eventLog"
+            class="event-log"
+            role="log"
+            aria-relevant="additions"
+            aria-label="事件总线，最新在上"
+          ></div>
+          <div class="event-form">
+            <label class="ev-row">
+              类型
+              <input id="evType" type="text" value="ping" />
+            </label>
+            <label class="ev-row">
+              目标终端
+              <select id="evTo"></select>
+            </label>
+            <label class="ev-row ev-text-label">注入文本（可选）</label>
+            <textarea
+              id="evText"
+              rows="3"
+              placeholder="填写时向目标 tmux 注入文本；留空则仅 HTTP 广播（可配合「目标终端」转发）"
+            ></textarea>
+            <label class="ev-check">
+              <input type="checkbox" id="evAppendEnter" checked />
+              末尾发送 Enter
+            </label>
+            <button type="button" id="btnEmit">发送事件</button>
+          </div>
+          <details class="event-hint">
+            <summary>终端如何上报事件</summary>
+            <p>
+              在终端内用 <code>curl</code> 向本服务上报（见下方示例）。事件只经
+              HTTP，不再从 tmux 日志解析 stdout 行。
+            </p>
+            <pre id="curlHint"></pre>
+          </details>
+        </aside>
+      </div>
       <div id="status" class="status" role="status"></div>
     </main>
 

@@ -8,15 +8,23 @@ const { randomUUID } = require("crypto");
 const { spawn, execFileSync } = require("child_process");
 const express = require("express");
 const WebSocket = require("ws");
+const {
+  loadInstructionTemplate,
+  expandTemplate,
+  buildPromptVars,
+  getAgentFlagParts,
+  writeAgentBootstrapScript,
+  shSingleQuote,
+} = require("./instruction");
 
 const PORT = Number(process.env.PORT) || 9988;
-const PUBLIC_DIR = path.join(__dirname, "..", "public");
-const NODE_MODULES = path.join(__dirname, "..", "node_modules");
+const REPO_ROOT = path.join(__dirname, "..");
+const PUBLIC_DIR = path.join(REPO_ROOT, "public");
+const NODE_MODULES = path.join(REPO_ROOT, "node_modules");
 
-/** @param {string} p */
-function shSingleQuote(p) {
-  return `'${String(p).replace(/'/g, `'\\''`)}'`;
-}
+/** 与 HTTP /api/events 及终端内 curl 共用；生产环境务必设置 AGENTMUX_TOKEN */
+const EVENT_TOKEN =
+  process.env.AGENTMUX_TOKEN || "dev-insecure-change-me";
 
 /** @param {string[]} args */
 function tmux(args, opts = {}) {
@@ -70,6 +78,92 @@ class AgentMuxServer {
     }
   }
 
+  /**
+   * @param {string} groupId
+   * @param {string} sourceTerminalId 来源 tmux 会话名或 "browser" / "http"
+   * @param {object} raw
+   */
+  emitEvent(groupId, sourceTerminalId, raw) {
+    const ev = {
+      type: raw.type || "event",
+      from: raw.from ?? sourceTerminalId,
+      to: raw.to,
+      text: raw.text,
+      payload: raw.payload,
+      appendEnter: raw.appendEnter,
+    };
+    const enriched = {
+      ...ev,
+      id: randomUUID(),
+      ts: Date.now(),
+    };
+    this.broadcast(groupId, { type: "bus_event", event: enriched });
+
+    const to = ev.to;
+    if (!to || typeof to !== "string") return;
+    const list = this.groups.get(groupId);
+    if (!list?.some((t) => t.name === to)) return;
+
+    if (ev.text !== undefined && ev.text !== null) {
+      this.sendTextToTerminal(
+        groupId,
+        to,
+        String(ev.text),
+        ev.appendEnter !== false,
+      );
+    } else {
+      const body = {
+        groupId,
+        type: ev.type,
+        from: ev.from,
+        payload: ev.payload,
+      };
+      const json = JSON.stringify(body);
+      const curlLine =
+        `curl -sS -X POST http://127.0.0.1:${PORT}/api/events` +
+        ` -H ${shSingleQuote("Content-Type: application/json")}` +
+        ` -H ${shSingleQuote(`X-AgentMux-Token: ${EVENT_TOKEN}`)}` +
+        ` -d ${shSingleQuote(json)}`;
+      this.sendTextToTerminal(groupId, to, curlLine, true);
+    }
+  }
+
+  /**
+   * @param {string} groupId
+   * @param {string} terminalId
+   * @param {string} text
+   * @param {boolean} appendEnter 是否在末尾多一次 Enter
+   */
+  sendTextToTerminal(groupId, terminalId, text, appendEnter) {
+    const list = this.groups.get(groupId);
+    const term = list?.find((t) => t.name === terminalId);
+    if (!term) return;
+    const target = `${term.name}:0`;
+    const lines = text.split("\n");
+    for (let i = 0; i < lines.length; i++) {
+      tmux(["send-keys", "-t", target, "-l", lines[i]]);
+      if (i < lines.length - 1) {
+        tmux(["send-keys", "-t", target, "Enter"]);
+      }
+    }
+    if (appendEnter) {
+      tmux(["send-keys", "-t", target, "Enter"]);
+    }
+  }
+
+  /**
+   * @param {string} groupId
+   * @param {TerminalSession} term
+   * @param {Buffer} chunk
+   */
+  processTailChunk(groupId, term, chunk) {
+    this.broadcast(groupId, {
+      type: "output",
+      terminalId: term.name,
+      data: chunk.toString("utf8"),
+    });
+  }
+
   createGroup(cwd, initialCount) {
     const groupId = randomUUID().replace(/-/g, "").slice(0, 12);
     const baseDir = path.join(os.tmpdir(), "agentmux", groupId);
@@ -91,6 +185,7 @@ class AgentMuxServer {
       groupId,
       cwd,
       agentBin: AGENT_BIN,
+      eventToken: EVENT_TOKEN,
       terminals: list.map((t) => ({
         id: t.name,
         index: t.index,
@@ -118,7 +213,30 @@ class AgentMuxServer {
 
     this._startTail(groupId, term);
 
-    tmux(["send-keys", "-t", `${name}:0`, "-l", AGENT_BIN]);
+    const cwdResolved = path.resolve(cwd);
+    const template = loadInstructionTemplate();
+    const vars = buildPromptVars({
+      groupId,
+      cwdResolved,
+      sessionName: name,
+      port: PORT,
+    });
+    const expanded = expandTemplate(template, vars);
+    const apiBase = `http://127.0.0.1:${PORT}`;
+    const scriptPath = writeAgentBootstrapScript({
+      baseDir,
+      index,
+      agentBin: AGENT_BIN,
+      groupId,
+      sessionName: name,
+      apiBase,
+      eventToken: EVENT_TOKEN,
+      promptBody: expanded,
+      agentFlagParts: getAgentFlagParts(),
+    });
+
+    const runLine = `sh ${shSingleQuote(scriptPath)}`;
+    tmux(["send-keys", "-t", `${name}:0`, "-l", runLine]);
     tmux(["send-keys", "-t", `${name}:0`, "Enter"]);
 
     return term;
@@ -130,11 +248,7 @@ class AgentMuxServer {
     });
     term.tail = tail;
     tail.stdout.on("data", (buf) => {
-      this.broadcast(groupId, {
-        type: "output",
-        terminalId: term.name,
-        data: buf.toString("utf8"),
-      });
+      this.processTailChunk(groupId, term, buf);
     });
     tail.stderr.on("data", (buf) => {
       this.broadcast(groupId, {
@@ -265,6 +379,38 @@ app.get("/api/health", (_req, res) => {
   res.json({ ok: true, agentBin: AGENT_BIN });
 });
 
+app.post(
+  "/api/events",
+  express.json({ limit: "64kb" }),
+  (req, res) => {
+    const hdr = req.headers["x-agentmux-token"];
+    const token =
+      (typeof hdr === "string" && hdr) ||
+      (typeof req.query.token === "string" && req.query.token) ||
+      "";
+    if (token !== EVENT_TOKEN) {
+      res.status(401).json({ ok: false, error: "unauthorized" });
+      return;
+    }
+    const { groupId, type, from, to, text, payload, appendEnter } =
+      req.body || {};
+    const gid = groupId && String(groupId);
+    if (!gid || !mux.groups.has(gid)) {
+      res.status(404).json({ ok: false, error: "unknown_group" });
+      return;
+    }
+    const source = from != null ? String(from) : "http";
+    mux.emitEvent(gid, source, {
+      type,
+      to,
+      text,
+      payload,
+      appendEnter,
+    });
+    res.json({ ok: true });
+  },
+);
+
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server, path: "/ws" });
 
@@ -364,4 +510,29 @@ server.on("error", (err) => {
 server.listen(PORT, "127.0.0.1", () => {
   console.log(`AgentMux listening on http://127.0.0.1:${PORT}`);
   console.log(`Resolved agent binary: ${AGENT_BIN}`);
+  const instCustom = process.env.AGENTMUX_AGENT_INSTRUCTION_FILE;
+  const instDefault = path.join(REPO_ROOT, "config", "agent-instruction.md");
+  if (instCustom && fs.existsSync(instCustom)) {
+    console.log(`Agent instruction file: ${instCustom}`);
+  } else if (fs.existsSync(instDefault)) {
+    console.log(`Agent instruction file: ${instDefault}`);
+  } else {
+    console.log(
+      "Agent instruction: (built-in default; add config/agent-instruction.md to customize)",
+    );
+  }
+  {
+    const parts = getAgentFlagParts();
+    console.log(
+      `Agent CLI extra args: ${parts.length ? parts.join(" ") : "(none)"}  (unset env → default --yolo auto-approve; AGENTMUX_AGENT_FLAGS= for shell prompts)`,
+    );
+  }
+  console.log(
+    `Event bus: POST /api/events  Header: X-AgentMux-Token: <token>  (set AGENTMUX_TOKEN env)`,
+  );
+  if (!process.env.AGENTMUX_TOKEN) {
+    console.warn(
+      `Using default AGENTMUX_TOKEN (dev only): ${EVENT_TOKEN}`,
+    );
+  }
 });
