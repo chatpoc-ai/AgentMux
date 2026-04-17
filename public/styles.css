@@ -186,18 +186,59 @@ button:disabled {
 .event-log {
   margin: 0;
   flex: 1;
-  min-height: 120px;
-  max-height: 200px;
+  min-height: 140px;
+  max-height: 240px;
   overflow: auto;
-  padding: 8px;
-  font-size: 0.72rem;
-  line-height: 1.35;
+  padding: 6px;
+  font-size: 0.78rem;
+  line-height: 1.4;
   background: #161b22;
   border: 1px solid #30363d;
   border-radius: 6px;
+  color: #c9d1d9;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.event-log-entry {
+  padding-bottom: 8px;
+  border-bottom: 1px solid #21262d;
+}
+
+.event-log-entry:last-child {
+  padding-bottom: 0;
+  border-bottom: none;
+}
+
+.event-log-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 10px;
+  font-size: 0.7rem;
   color: #8b949e;
+}
+
+.event-log-time {
+  font-variant-numeric: tabular-nums;
+}
+
+.event-log-type {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: #21262d;
+  color: #79c0ff;
+  font-weight: 500;
+}
+
+.event-log-body {
+  margin: 4px 0 0;
+  font-size: 0.78rem;
+  color: #e6edf3;
   white-space: pre-wrap;
-  word-break: break-all;
+  word-break: break-word;
 }
 
 .event-form {

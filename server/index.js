@@ -8,7 +8,6 @@ const { randomUUID } = require("crypto");
 const { spawn, execFileSync } = require("child_process");
 const express = require("express");
 const WebSocket = require("ws");
-const { parseEventLine, formatEventLine } = require("./event-bus");
 const {
   loadInstructionTemplate,
   expandTemplate,
@@ -61,8 +60,6 @@ class TerminalSession {
     this.name = safeSessionName(groupId, index);
     /** @type {import('child_process').ChildProcess | null} */
     this.tail = null;
-    /** tail 按行解析事件时未完结的缓冲 */
-    this.lineBuffer = "";
   }
 }
 
@@ -115,13 +112,19 @@ class AgentMuxServer {
         ev.appendEnter !== false,
       );
     } else {
-      const forward = {
+      const body = {
+        groupId,
         type: ev.type,
         from: ev.from,
         payload: ev.payload,
       };
-      const line = formatEventLine(forward);
-      this.sendTextToTerminal(groupId, to, line, true);
+      const json = JSON.stringify(body);
+      const curlLine =
+        `curl -sS -X POST http://127.0.0.1:${PORT}/api/events` +
+        ` -H ${shSingleQuote("Content-Type: application/json")}` +
+        ` -H ${shSingleQuote(`X-AgentMux-Token: ${EVENT_TOKEN}`)}` +
+        ` -d ${shSingleQuote(json)}`;
+      this.sendTextToTerminal(groupId, to, curlLine, true);
     }
   }
 
@@ -154,25 +157,11 @@ class AgentMuxServer {
    * @param {Buffer} chunk
    */
   processTailChunk(groupId, term, chunk) {
-    term.lineBuffer += chunk.toString("utf8");
-    const parts = term.lineBuffer.split("\n");
-    term.lineBuffer = parts.pop() ?? "";
-    let out = "";
-    for (const line of parts) {
-      const ev = parseEventLine(line);
-      if (ev) {
-        this.emitEvent(groupId, term.name, ev);
-      } else {
-        out += line + "\n";
-      }
-    }
-    if (out) {
-      this.broadcast(groupId, {
-        type: "output",
-        terminalId: term.name,
-        data: out,
-      });
-    }
+    this.broadcast(groupId, {
+      type: "output",
+      terminalId: term.name,
+      data: chunk.toString("utf8"),
+    });
   }
 
   createGroup(cwd, initialCount) {
@@ -197,7 +186,6 @@ class AgentMuxServer {
       cwd,
       agentBin: AGENT_BIN,
       eventToken: EVENT_TOKEN,
-      eventHttpUrl: `http://127.0.0.1:${PORT}/api/events`,
       terminals: list.map((t) => ({
         id: t.name,
         index: t.index,
@@ -242,6 +230,7 @@ class AgentMuxServer {
       groupId,
       sessionName: name,
       apiBase,
+      eventToken: EVENT_TOKEN,
       promptBody: expanded,
       agentFlagParts: getAgentFlagParts(),
     });
@@ -477,13 +466,6 @@ wss.on("connection", (ws) => {
       }
       case "close": {
         mux.closeTerminal(groupId, String(msg.terminalId || ""));
-        break;
-      }
-      case "emit_event": {
-        const ev = msg.event && typeof msg.event === "object" ? msg.event : {};
-        const from =
-          (msg.fromTerminalId && String(msg.fromTerminalId)) || "browser";
-        mux.emitEvent(groupId, from, ev);
         break;
       }
       case "shutdown": {

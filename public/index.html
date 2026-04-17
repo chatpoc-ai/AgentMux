@@ -37,7 +37,13 @@
         <div id="terminalHost"></div>
         <aside class="event-panel" aria-label="事件总线">
           <h2 class="event-title">事件总线</h2>
-          <pre id="eventLog" class="event-log" title="最近事件"></pre>
+          <div
+            id="eventLog"
+            class="event-log"
+            role="log"
+            aria-relevant="additions"
+            aria-label="事件总线，最新在上"
+          ></div>
           <div class="event-form">
             <label class="ev-row">
               类型
@@ -51,7 +57,7 @@
             <textarea
               id="evText"
               rows="3"
-              placeholder="有 text 时向目标 tmux 注入；留空则仅广播并转发 payload 行"
+              placeholder="填写时向目标 tmux 注入文本；留空则仅 HTTP 广播（可配合「目标终端」转发）"
             ></textarea>
             <label class="ev-check">
               <input type="checkbox" id="evAppendEnter" checked />
@@ -62,10 +68,9 @@
           <details class="event-hint">
             <summary>终端如何上报事件</summary>
             <p>
-              在终端打印一行（会被解析为事件，不显示在终端画面）：
-              <code>AGENTMUX_EVENT:{"type":"done","to":"…","payload":{}}</code>
+              在终端内用 <code>curl</code> 向本服务上报（见下方示例）。事件只经
+              HTTP，不再从 tmux 日志解析 stdout 行。
             </p>
-            <p>或用 curl 调 HTTP：</p>
             <pre id="curlHint"></pre>
           </details>
         </aside>

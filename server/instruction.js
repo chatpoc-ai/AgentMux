@@ -6,9 +6,7 @@ const { randomBytes } = require("crypto");
 
 const ROOT = path.join(__dirname, "..");
 
-const DEFAULT_INSTRUCTION = `You run inside AgentMux. Report to the orchestrator using stdout lines:
-AGENTMUX_EVENT:{"type":"done","payload":{}} or {"type":"require_confirmation","payload":{"question":"…"}}
-Use env AGENTMUX_GROUP_ID and AGENTMUX_SESSION_ID. HTTP: POST $AGENTMUX_API_BASE/api/events with X-AgentMux-Token from the web UI.`;
+const DEFAULT_INSTRUCTION = `You run inside AgentMux. Report only via HTTP: POST $AGENTMUX_API_BASE/api/events with X-AgentMux-Token: $AGENTMUX_TOKEN; emit done after work. Caveman mode: terse, technical substance exact, drop fluff; clear prose for security/irreversible/confusion. pattern: [thing] [action] [reason]. [next step]. Put that in payload.result. No token in chat.`;
 
 /** @param {string} p */
 function shSingleQuote(p) {
@@ -88,6 +86,7 @@ function getAgentFlagParts() {
  * @param {string} o.groupId
  * @param {string} o.sessionName
  * @param {string} o.apiBase
+ * @param {string} o.eventToken 与 POST /api/events 的 X-AgentMux-Token 一致
  * @param {string} o.promptBody
  * @param {string[]} [o.agentFlagParts] 传给 agent 的额外参数（如 --yolo）
  * @returns {string} 可执行脚本绝对路径
@@ -115,6 +114,7 @@ set -e
 export AGENTMUX_GROUP_ID=${shSingleQuote(o.groupId)}
 export AGENTMUX_SESSION_ID=${shSingleQuote(o.sessionName)}
 export AGENTMUX_API_BASE=${shSingleQuote(o.apiBase)}
+export AGENTMUX_TOKEN=${shSingleQuote(o.eventToken)}
 ${execHead}
 ${promptBody}
 ${delim}
