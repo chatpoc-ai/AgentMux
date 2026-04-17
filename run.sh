@@ -5,6 +5,7 @@ ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT"
 
 PORT="${PORT:-9988}"
+HOST="${HOST:-0.0.0.0}"
 # Cursor agent: server defaults to --yolo (auto-run shell). To restore per-command prompts:
 #   export AGENTMUX_AGENT_FLAGS=
 PIDFILE="${ROOT}/.agentmux.pid"
@@ -61,12 +62,41 @@ if lsof -tiTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
   exit 1
 fi
 
+echo "Building React UI..."
+npm run build >/dev/null
+
 export PORT
-nohup node "${ROOT}/server/index.js" >> "${LOGFILE}" 2>&1 &
-echo $! > "${PIDFILE}"
+export HOST
+nohup node "${ROOT}/server/index.js" >> "${LOGFILE}" 2>&1 < /dev/null &
+NEW_PID=$!
+disown "${NEW_PID}" 2>/dev/null || true
+echo "${NEW_PID}" > "${PIDFILE}"
+
+wait_for_startup() {
+  local i
+  for i in {1..20}; do
+    if lsof -tiTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
+      return 0
+    fi
+    if ! kill -0 "${NEW_PID}" 2>/dev/null; then
+      return 1
+    fi
+    sleep 0.25
+  done
+  return 1
+}
+
+if ! wait_for_startup; then
+  echo "Error: AgentMux failed to start on port ${PORT}." >&2
+  echo "Recent log output:" >&2
+  tail -n 40 "${LOGFILE}" >&2 || true
+  exit 1
+fi
 
 echo "AgentMux started in background."
 echo "  URL:  http://127.0.0.1:${PORT}"
+echo "  Host: ${HOST}"
+echo "  LAN:  http://<server-ip>:${PORT}"
 echo "  PID:  $(cat "${PIDFILE}")"
 echo "  Log:  ${LOGFILE}"
 echo "Stop:  kill \$(cat ${PIDFILE})   or   ./run.sh (starts a new one and replaces the old)"

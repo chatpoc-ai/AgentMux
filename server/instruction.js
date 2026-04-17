@@ -39,6 +39,58 @@ function expandTemplate(template, vars) {
 }
 
 /**
+ * Merge `config/agent-instruction.md` (or env override) with optional
+ * `~/.agentmux/projects/<id>/extra-instruction.md`. The extra file survives
+ * server restarts and is re-injected whenever we spawn a **new** agent
+ * (new tmux session). Live chat history is still held by the running
+ * cursor-agent process — if tmux dies, only this persisted text + template
+ * return on the next bootstrap.
+ *
+ * @param {string} projectBaseDir
+ * @param {Record<string, string>} vars
+ */
+function composeAgentPrompt(projectBaseDir, vars) {
+  const template = loadInstructionTemplate();
+  let body = expandTemplate(template, vars);
+  const extraPath = path.join(projectBaseDir, "extra-instruction.md");
+  if (fs.existsSync(extraPath)) {
+    try {
+      const extra = fs.readFileSync(extraPath, "utf8").trim();
+      if (extra) {
+        body +=
+          "\n\n---\n## Project notes (from extra-instruction.md, persists across restarts)\n\n" +
+          extra;
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+  return body;
+}
+
+/**
+ * Create a placeholder so users know where to put standing rules.
+ * @param {string} projectBaseDir
+ */
+function ensureExtraInstructionFile(projectBaseDir) {
+  const p = path.join(projectBaseDir, "extra-instruction.md");
+  if (fs.existsSync(p)) return;
+  fs.mkdirSync(projectBaseDir, { recursive: true });
+  fs.writeFileSync(
+    p,
+    [
+      "# Long-term instructions for this project",
+      "",
+      "# Merged into the cursor-agent bootstrap whenever this tmux session is",
+      "# created or recreated (new terminal, dead session, server restart).",
+      "# In-chat turns are not replayed — put durable rules and context here.",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+}
+
+/**
  * @param {object} o
  * @param {string} o.groupId
  * @param {string} o.cwdResolved
@@ -127,6 +179,8 @@ ${delim}
 module.exports = {
   loadInstructionTemplate,
   expandTemplate,
+  composeAgentPrompt,
+  ensureExtraInstructionFile,
   buildPromptVars,
   getAgentFlagParts,
   writeAgentBootstrapScript,
