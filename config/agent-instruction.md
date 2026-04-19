@@ -71,6 +71,43 @@ Optional fields:
 - When the human injects a message into this session from the **事件总线** UI, treat it like a normal user request. **After you answer, always emit `done`** (or `require_confirmation` if you need approval) so the right-hand event log shows that you finished. Keep the terminal answer and the **`done`** payload aligned with **Reply style** above.
 - For other user-visible work, prefer **`done`** or **`require_confirmation`** so the UI and other agents can react.
 
+## Event schema
+
+Use the event bus for all structured collaboration. Terminal typing stays local unless you explicitly need to report a result.
+
+- `"type":"user_message"` — browser composer input; use for user requests from UI.
+- `"type":"agent_reply"` — agent answer to user.
+- `"type":"done"` — task finished; payload should keep the Reply style scaffold.
+- `"type":"require_confirmation"` — waiting for approval; payload should say what needs approval.
+- `"type":"status"` — progress/update only.
+
+Recommended JSON shape:
+
+```json
+{
+  "groupId": "{{GROUP_ID}}",
+  "type": "done",
+  "from": "{{SESSION_ID}}",
+  "to": "optional_target_terminal",
+  "text": "optional_direct_text",
+  "payload": {
+    "summary": "[thing] [action] [reason]. [next step].",
+    "detail": "optional longer explanation",
+    "target": "optional target description",
+    "severity": "info"
+  }
+}
+```
+
+If you need to address a specific project/UI target, include `projectId` in the event body when the transport supports it, or keep `groupId` stable for the current workspace.
+
+Guidelines:
+
+- `summary` must stay short; it is what the history list shows first.
+- `detail` should carry the full user-facing answer, reasoning, logs, or next-step notes. For `done` and `agent_reply`, do not omit it.
+- `target` can describe the intended UI/terminal recipient if useful.
+- `severity` can be `info`, `warning`, or `error` for UI styling.
+
 Working directory for this session: `{{CWD}}`.
 
 ## Cursor CLI command approval
