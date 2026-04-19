@@ -119,25 +119,234 @@ function IconChevron({ open = false }) {
   );
 }
 
+function summarizeEvent(event) {
+  if (!event || typeof event !== "object") return "";
+  if (typeof event.payload?.summary === "string" && event.payload.summary.trim()) {
+    return event.payload.summary.trim();
+  }
+  if (typeof event.text === "string" && event.text.trim()) return event.text.trim();
+  if (typeof event.payload?.result === "string" && event.payload.result.trim()) {
+    return event.payload.result.trim();
+  }
+  if (typeof event.payload === "string" && event.payload.trim()) {
+    return event.payload.trim();
+  }
+  return "";
+}
+
+function formatEventOrigin(event, project) {
+  if (!event || typeof event !== "object") return "事件";
+  if (event.from === "browser") return "你";
+  if (project && typeof event.from === "string") {
+    const match = project.terminals?.find(
+      (terminal) => terminal.tmuxSession === event.from || terminal.id === event.from,
+    );
+    if (match?.label) return match.label;
+  }
+  if (typeof event.from === "string" && event.from.trim()) return event.from;
+  return "事件";
+}
+
+function formatEventTarget(event, project) {
+  if (!event || typeof event !== "object") return "";
+  if (project && typeof event.to === "string") {
+    const match = project.terminals?.find(
+      (terminal) => terminal.tmuxSession === event.to || terminal.id === event.to,
+    );
+    if (match?.label) return match.label;
+  }
+  if (typeof event.to === "string" && event.to.trim()) return event.to;
+  return "";
+}
+
+function formatEventKind(event) {
+  const type = typeof event?.type === "string" ? event.type : "event";
+  switch (type) {
+    case "user_message":
+      return "用户";
+    case "agent_reply":
+      return "回复";
+    case "done":
+      return "done";
+    case "require_confirmation":
+      return "确认";
+    case "status":
+      return "状态";
+    case "terminal_input":
+      return "终端输入";
+    default:
+      return type;
+  }
+}
+
+function getEventDetail(event) {
+  if (!event || typeof event !== "object") return "";
+  if (typeof event.payload?.detail === "string" && event.payload.detail.trim()) {
+    return event.payload.detail.trim();
+  }
+  if (typeof event.payload?.summary === "string" && event.payload.summary.trim()) {
+    return event.payload.summary.trim();
+  }
+  if (typeof event.payload?.result === "string" && event.payload.result.trim()) {
+    return event.payload.result.trim();
+  }
+  return "";
+}
+
+function detectFileMode(fileName = "") {
+  const lower = String(fileName).toLowerCase();
+  if (lower.endsWith(".md") || lower.endsWith(".markdown")) return "markdown";
+  if (lower.endsWith(".json")) return "json";
+  if (lower.endsWith(".js") || lower.endsWith(".mjs") || lower.endsWith(".cjs")) {
+    return "javascript";
+  }
+  return "text";
+}
+
+function formatPreviewLines(content = "") {
+  const text = String(content ?? "");
+  const lines = text.split("\n");
+  return lines.map((line, index) => ({
+    number: index + 1,
+    text: line,
+  }));
+}
+
+function escapeHtml(text) {
+  return String(text)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function renderInlineMarkdown(text) {
+  const safe = escapeHtml(text);
+  return safe
+    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+    .replace(/\*(.+?)\*/g, "<em>$1</em>")
+    .replace(/`(.+?)`/g, "<code>$1</code>");
+}
+
+function parseMarkdownDocument(content = "") {
+  const lines = String(content ?? "").split("\n");
+  const out = [];
+  const outline = [];
+  let i = 0;
+  let key = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    const trimmed = line.trim();
+    if (!trimmed) {
+      out.push(<div key={`md-${key++}`} className="md-empty-line" />);
+      i += 1;
+      continue;
+    }
+    if (/^```/.test(trimmed)) {
+      const codeLines = [];
+      i += 1;
+      while (i < lines.length && !/^```/.test(lines[i].trim())) {
+        codeLines.push(lines[i]);
+        i += 1;
+      }
+      if (i < lines.length) i += 1;
+      out.push(
+        <pre key={`md-${key++}`} className="md-code-block">
+          {codeLines.join("\n")}
+        </pre>,
+      );
+      continue;
+    }
+    const heading = trimmed.match(/^(#{1,6})\s+(.*)$/);
+    if (heading) {
+      const level = heading[1].length;
+      const text = heading[2];
+      const slug = text
+        .toLowerCase()
+        .replace(/[^a-z0-9\u4e00-\u9fff]+/g, "-")
+        .replace(/^-+|-+$/g, "")
+        .slice(0, 48) || `heading-${key}`;
+      outline.push({ level, text, id: slug });
+      out.push(
+        <div
+          key={`md-${key++}`}
+          id={slug}
+          className={`md-heading md-heading-${level}`}
+          dangerouslySetInnerHTML={{ __html: renderInlineMarkdown(text) }}
+        />,
+      );
+      i += 1;
+      continue;
+    }
+    if (/^---+$/.test(trimmed)) {
+      out.push(<hr key={`md-${key++}`} className="md-divider" />);
+      i += 1;
+      continue;
+    }
+    if (/^>\s?/.test(trimmed)) {
+      const quoteLines = [];
+      while (i < lines.length && /^>\s?/.test(lines[i].trim())) {
+        quoteLines.push(lines[i].trim().replace(/^>\s?/, ""));
+        i += 1;
+      }
+      out.push(
+        <blockquote
+          key={`md-${key++}`}
+          className="md-blockquote"
+          dangerouslySetInnerHTML={{ __html: renderInlineMarkdown(quoteLines.join(" ")) }}
+        />,
+      );
+      continue;
+    }
+    if (/^([-*+])\s+/.test(trimmed)) {
+      const items = [];
+      while (i < lines.length && /^([-*+])\s+/.test(lines[i].trim())) {
+        items.push(lines[i].trim().replace(/^([-*+])\s+/, ""));
+        i += 1;
+      }
+      out.push(
+        <ul key={`md-${key++}`} className="md-list">
+          {items.map((item, itemIndex) => (
+            <li
+              key={`md-${key}-${itemIndex}`}
+              dangerouslySetInnerHTML={{ __html: renderInlineMarkdown(item) }}
+            />
+          ))}
+        </ul>,
+      );
+      continue;
+    }
+    const para = [];
+    while (i < lines.length && lines[i].trim()) {
+      para.push(lines[i].trim());
+      i += 1;
+      if (i < lines.length && /^(\s*$|#{1,6}\s|```|>\s?|([-*+])\s+)/.test(lines[i])) break;
+    }
+    out.push(
+      <p
+        key={`md-${key++}`}
+        className="md-paragraph"
+        dangerouslySetInnerHTML={{ __html: renderInlineMarkdown(para.join(" ")) }}
+      />,
+    );
+  }
+  return { blocks: out, outline };
+}
+
 const TerminalWorkspace = forwardRef(function TerminalWorkspace(
   { activeTerminal, onInput, onResize, onRequestSnapshot },
   ref,
 ) {
   const hostRef = useRef(null);
   const terminalRef = useRef(null);
-  const terminalReadyRef = useRef(false);
-  const pendingWritesRef = useRef([]);
 
   // Keep routing refs in sync with props on every render — NOT in useEffect.
   // If we only updated in useEffect, keydown could fire after paint but before
   // effects ran, and onData would still send input to the previous terminal.
   const activeTerminalRef = useRef(activeTerminal);
   const onInputRef = useRef(onInput);
-  const onResizeRef = useRef(onResize);
   const onRequestSnapshotRef = useRef(onRequestSnapshot);
   activeTerminalRef.current = activeTerminal;
   onInputRef.current = onInput;
-  onResizeRef.current = onResize;
   onRequestSnapshotRef.current = onRequestSnapshot;
   // Route live output with activeTerminalRef (synced every render), same as
   // onData — never use a separate "output key" ref: it can lag one frame and
@@ -154,34 +363,25 @@ const TerminalWorkspace = forwardRef(function TerminalWorkspace(
     if (!terminalMatches(activeTerminalRef.current, projectId, terminalId)) {
       return;
     }
-    const write = () => {
       try {
         term.reset();
         if (data) {
           term.write(normalizeSnapshotPayload(data));
+          term.scrollToBottom();
           syncXtermToTmuxDims(term);
         }
         window.requestAnimationFrame(() => {
-          if (!terminalMatches(activeTerminalRef.current, projectId, terminalId)) {
-            return;
-          }
-          try {
-            term.focus();
-          } catch {
-            /* ignore */
-          }
-        });
-      } catch {
-        /* ignore */
-      }
-    };
-    if (terminalReadyRef.current) {
-      write();
-    } else {
-      pendingWritesRef.current.push({
-        __switch: true,
-        text: normalizeSnapshotPayload(data || ""),
+        if (!terminalMatches(activeTerminalRef.current, projectId, terminalId)) {
+          return;
+        }
+        try {
+          term.focus();
+        } catch {
+          /* ignore */
+        }
       });
+    } catch {
+      /* ignore */
     }
   });
 
@@ -214,46 +414,21 @@ const TerminalWorkspace = forwardRef(function TerminalWorkspace(
     term.onResize(({ cols, rows }) => {
       const at = activeTerminalRef.current;
       if (!at) return;
-      onResizeRef.current?.(at.projectId, at.id, cols, rows);
+      onResize?.(at.projectId, at.id, cols, rows);
     });
     terminalRef.current = term;
-    terminalReadyRef.current = false;
 
     let opened = false;
     let disposed = false;
-    let openTimer = 0;
-
-    const flushPending = () => {
-      const pending = pendingWritesRef.current.splice(0);
-      for (const chunk of pending) {
-        try {
-          if (chunk && typeof chunk === "object" && chunk.__switch) {
-            term.reset();
-            term.write(chunk.text);
-            syncXtermToTmuxDims(term);
-          } else {
-            term.write(chunk);
-          }
-        } catch {
-          /* ignore */
-        }
-      }
-    };
 
     const markReady = () => {
-      if (disposed || terminalReadyRef.current) return;
+      if (disposed) return;
       try {
         fitAddon.fit();
         syncXtermToTmuxDims(term);
       } catch {
         /* ignore */
       }
-      // Do not call fit()+resize() again on ResizeObserver while streaming:
-      // repeated reflow desyncs cursor vs incremental tail bytes (looks like
-      // "no output until switch tab"). Fixed 80×24 matches tmux PTY; host
-      // resize does not change cols/rows.
-      terminalReadyRef.current = true;
-      flushPending();
       window.requestAnimationFrame(() => {
         try {
           term.focus();
@@ -266,7 +441,7 @@ const TerminalWorkspace = forwardRef(function TerminalWorkspace(
     const tryOpen = () => {
       if (opened || disposed) return;
       const rect = host.getBoundingClientRect();
-      if (rect.width < 80 || rect.height < 40) return;
+      if (rect.width < 20 || rect.height < 20) return;
       opened = true;
       try {
         term.open(host);
@@ -278,10 +453,6 @@ const TerminalWorkspace = forwardRef(function TerminalWorkspace(
         renderDisposable.dispose();
         markReady();
       });
-      openTimer = window.setTimeout(() => {
-        renderDisposable.dispose();
-        markReady();
-      }, 500);
     };
 
     const resizeObserver = new ResizeObserver(() => {
@@ -289,17 +460,14 @@ const TerminalWorkspace = forwardRef(function TerminalWorkspace(
         tryOpen();
         return;
       }
-      /* intentionally no fit()/resize here — see markReady comment */
+      /* intentionally no fit()+resize here — see markReady comment */
     });
     resizeObserver.observe(host);
     tryOpen();
 
     return () => {
       disposed = true;
-      if (openTimer) window.clearTimeout(openTimer);
       resizeObserver.disconnect();
-      terminalReadyRef.current = false;
-      pendingWritesRef.current = [];
       try {
         term.dispose();
       } catch {
@@ -314,13 +482,9 @@ const TerminalWorkspace = forwardRef(function TerminalWorkspace(
     if (!term) return;
     // On every active-terminal change we:
     //   1) reset xterm (no carry-over from the previous terminal)
-    //   2) send a resize (currently a server no-op, kept for future use)
-    //   3) ask the server for a fresh `capture-pane` snapshot
-    // Live `appendOutput` deltas begin flowing afterwards; this avoids
-    // replaying the log file, which would re-apply alt-screen differential
-    // updates out of order and produce the "black bars" rendering bug.
+    //   2) ask the server for a fresh `capture-pane` snapshot
+    // Live `appendOutput` deltas then continue from the current frame.
     // useLayoutEffect: reset runs before paint / before most WS callbacks.
-    pendingWritesRef.current = [];
     const placeholder = activeTerminal
       ? ""
       : "\r\nSelect a terminal from the sidebar.\r\n";
@@ -329,12 +493,6 @@ const TerminalWorkspace = forwardRef(function TerminalWorkspace(
         term.reset();
         if (placeholder) term.write(placeholder);
         if (activeTerminal) {
-          onResizeRef.current?.(
-            activeTerminal.projectId,
-            activeTerminal.id,
-            term.cols,
-            term.rows,
-          );
           onRequestSnapshotRef.current?.(
             activeTerminal.projectId,
             activeTerminal.id,
@@ -351,11 +509,27 @@ const TerminalWorkspace = forwardRef(function TerminalWorkspace(
         /* ignore */
       }
     };
-    if (terminalReadyRef.current) {
-      applySwitch();
-    } else {
-      pendingWritesRef.current.push({ __switch: true, text: placeholder });
-    }
+    applySwitch();
+  }, [activeTerminal]);
+
+  useEffect(() => {
+    if (!activeTerminal) return;
+    const raf = window.requestAnimationFrame(() => {
+      const host = hostRef.current;
+      const term = terminalRef.current;
+      const termEl = term?.element;
+      const screenEl = termEl?.querySelector?.(".xterm-screen");
+      const viewportEl = termEl?.querySelector?.(".xterm-viewport");
+      console.debug("[amux terminal diag]", {
+        host: host?.getBoundingClientRect?.(),
+        termElement: termEl?.getBoundingClientRect?.(),
+        screen: screenEl?.getBoundingClientRect?.(),
+        viewport: viewportEl?.getBoundingClientRect?.(),
+        cols: term?.cols,
+        rows: term?.rows,
+      });
+    });
+    return () => window.cancelAnimationFrame(raf);
   }, [activeTerminal]);
 
   const appendOutput = useEffectEvent((projectId, terminalId, data) => {
@@ -364,12 +538,9 @@ const TerminalWorkspace = forwardRef(function TerminalWorkspace(
     if (!terminalMatches(activeTerminalRef.current, projectId, terminalId)) {
       return;
     }
-    if (!terminalReadyRef.current) {
-      pendingWritesRef.current.push(data);
-      return;
-    }
     try {
       term.write(data);
+      term.scrollToBottom();
     } catch {
       /* ignore */
     }
@@ -399,18 +570,31 @@ const TerminalWorkspace = forwardRef(function TerminalWorkspace(
   );
 });
 
-function TreeNode({ node, expanded, onToggle, loadedEntry, depth }) {
+function TreeNode({
+  node,
+  rootId,
+  expanded,
+  onToggle,
+  loadedEntry,
+  depth,
+  onOpenFile,
+  activePreviewKey,
+}) {
   const isOpen = !!expanded[node.path];
   const childState = loadedEntry?.[node.path];
   const children = childState?.entries ?? [];
+  const isPreviewActive =
+    node.type === "file" && activePreviewKey === `${rootId}:${node.path}`;
 
   return (
     <div className="tree-node">
       <button
         type="button"
-        className={`tree-row ${node.type}`}
+        className={`tree-row ${node.type} ${isPreviewActive ? "preview-active" : ""}`}
         style={{ paddingLeft: `${depth * 14 + 12}px` }}
-        onClick={() => onToggle(node)}
+        onClick={() =>
+          node.type === "file" ? onOpenFile?.(node) : onToggle(node)
+        }
       >
         <span className="tree-caret">
           {node.type === "directory" ? <IconChevron open={isOpen} /> : "·"}
@@ -428,10 +612,13 @@ function TreeNode({ node, expanded, onToggle, loadedEntry, depth }) {
               <TreeNode
                 key={child.path}
                 node={child}
+                rootId={rootId}
                 expanded={expanded}
                 onToggle={onToggle}
                 loadedEntry={loadedEntry}
                 depth={depth + 1}
+                onOpenFile={onOpenFile}
+                activePreviewKey={activePreviewKey}
               />
             ))
           ) : (
@@ -445,6 +632,7 @@ function TreeNode({ node, expanded, onToggle, loadedEntry, depth }) {
 
 function DirectoryPickerModal({
   open,
+  mode,
   roots,
   currentPath,
   listing,
@@ -461,7 +649,7 @@ function DirectoryPickerModal({
         <div className="picker-header">
           <div>
             <p className="picker-eyebrow">服务器目录选择</p>
-            <h2>选择项目文件夹</h2>
+            <h2>{mode === "link" ? "关联引用目录" : "选择项目文件夹"}</h2>
           </div>
           <button type="button" className="close-button" onClick={onClose}>
             ×
@@ -500,7 +688,11 @@ function DirectoryPickerModal({
               disabled={creating}
               onClick={() => onSelect(currentPath)}
             >
-              {creating ? "创建中…" : "选择这个文件夹"}
+              {creating
+                ? "创建中…"
+                : mode === "link"
+                  ? "关联这个目录"
+                  : "选择这个文件夹"}
             </button>
           ) : null}
         </div>
@@ -542,6 +734,7 @@ export default function App() {
   const [expandedProjects, setExpandedProjects] = useState({});
   const [treeState, setTreeState] = useState({});
   const [expandedDirectories, setExpandedDirectories] = useState({});
+  const [activeTreeRootByProject, setActiveTreeRootByProject] = useState({});
   const [editingTerminalKey, setEditingTerminalKey] = useState(null);
   const [editingLabel, setEditingLabel] = useState("");
   const [sidebarWidth, setSidebarWidth] = useState(320);
@@ -555,7 +748,20 @@ export default function App() {
   const [flashingTerminals, setFlashingTerminals] = useState({});
   const flashTimersRef = useRef(new Map());
   const [filesPanelWidth, setFilesPanelWidth] = useState(310);
+  const [selectedFile, setSelectedFile] = useState(null);
+  const [fileContentState, setFileContentState] = useState({});
+  const [previewSize, setPreviewSize] = useState({ width: 0, height: 0 });
+  const [pickerMode, setPickerMode] = useState("create");
+  const [bottomPanelHeight, setBottomPanelHeight] = useState(() => {
+    const saved = window.localStorage.getItem("agentmux.bottomPanelHeight");
+    const parsed = Number(saved);
+    return Number.isFinite(parsed) ? Math.min(800, Math.max(320, parsed)) : 760;
+  });
+  const [composerText, setComposerText] = useState("");
+  const [projectHistories, setProjectHistories] = useState({});
   const resizeTargetRef = useRef(null);
+  const terminalShellRef = useRef(null);
+  const bottomPanelRef = useRef(null);
 
   const setStatus = (message, toneHint) => {
     if (!message) return;
@@ -589,6 +795,7 @@ export default function App() {
   const socketRef = useRef(null);
   const activeRef = useRef({ projectId: null, terminalId: null });
   const resizingRef = useRef(false);
+  const previewResizeRef = useRef(null);
   const terminalApiRef = useRef(null);
 
   const activeProject = useMemo(
@@ -664,39 +871,52 @@ export default function App() {
     }, 120);
   };
 
+  useEffect(() => {
+    window.localStorage.setItem(
+      "agentmux.bottomPanelHeight",
+      String(bottomPanelHeight),
+    );
+  }, [bottomPanelHeight]);
+
   const ensureSelection = (nextProjects) => {
     const currentProject =
       nextProjects.find((project) => project.id === activeRef.current.projectId) ??
-      nextProjects[0] ??
       null;
     const currentTerminal =
       currentProject?.terminals.find(
         (terminal) => terminal.id === activeRef.current.terminalId,
       ) ??
-      currentProject?.terminals[0] ??
       null;
     setActiveProjectId(currentProject?.id ?? null);
     setActiveTerminalId(currentTerminal?.id ?? null);
   };
 
-  const loadTree = useEffectEvent(async (projectId, treePath = ".") => {
+  const loadTree = useEffectEvent(async (projectId, rootId = "main", treePath = ".") => {
+    const project = projects.find((item) => item.id === projectId) || null;
+    const root = project?.roots?.find((item) => item.id === rootId) || project?.roots?.[0] || null;
+    if (!root) return;
     setTreeState((prev) => ({
       ...prev,
       [projectId]: {
         ...(prev[projectId] || {}),
-        [treePath]: {
-          entries: prev[projectId]?.[treePath]?.entries || [],
-          loading: true,
-          error: "",
+        [root.id]: {
+          ...(prev[projectId]?.[root.id] || {}),
+          [treePath]: {
+            entries: prev[projectId]?.[root.id]?.[treePath]?.entries || [],
+            loading: true,
+            error: "",
+          },
         },
       },
     }));
     try {
       const query =
         treePath && treePath !== "."
-          ? `?path=${encodeURIComponent(treePath)}`
+          ? `&path=${encodeURIComponent(treePath)}`
           : "";
-      const response = await fetch(`/api/projects/${projectId}/tree${query}`);
+      const response = await fetch(
+        `/api/projects/${projectId}/tree?rootId=${encodeURIComponent(root.id)}${query}`,
+      );
       const json = await response.json();
       if (!response.ok || !json.ok) {
         throw new Error(json.error || response.statusText);
@@ -705,10 +925,13 @@ export default function App() {
         ...prev,
         [projectId]: {
           ...(prev[projectId] || {}),
-          [treePath]: {
-            entries: json.entries || [],
-            loading: false,
-            error: "",
+          [root.id]: {
+            ...(prev[projectId]?.[root.id] || {}),
+            [treePath]: {
+              entries: json.entries || [],
+              loading: false,
+              error: "",
+            },
           },
         },
       }));
@@ -717,10 +940,13 @@ export default function App() {
         ...prev,
         [projectId]: {
           ...(prev[projectId] || {}),
-          [treePath]: {
-            entries: [],
-            loading: false,
-            error: error?.message || "Failed to load tree",
+          [root.id]: {
+            ...(prev[projectId]?.[root.id] || {}),
+            [treePath]: {
+              entries: [],
+              loading: false,
+              error: error?.message || "Failed to load tree",
+            },
           },
         },
       }));
@@ -756,6 +982,134 @@ export default function App() {
       setPickerLoading(false);
     }
   });
+
+  const openFile = useEffectEvent(async (projectId, rootId, filePath, fileName) => {
+    const initialWidth = Math.min(
+      Math.max(420, window.innerWidth * 0.34),
+      window.innerWidth * 0.45,
+    );
+    const initialHeight = Math.min(
+      Math.max(360, window.innerHeight * 0.62),
+      window.innerHeight * 0.82,
+    );
+    setPreviewSize({ width: initialWidth, height: initialHeight });
+    setSelectedFile({
+      projectId,
+      rootId,
+      path: filePath,
+      name: fileName,
+    });
+    setFileContentState((prev) => ({
+      ...prev,
+      [projectId]: {
+        ...(prev[projectId] || {}),
+        loading: true,
+        error: "",
+      },
+    }));
+    try {
+      const response = await fetch(
+        `/api/projects/${projectId}/file?rootId=${encodeURIComponent(rootId)}&path=${encodeURIComponent(filePath)}`,
+      );
+      const json = await response.json();
+      if (!response.ok || !json.ok) {
+        throw new Error(json.error || response.statusText);
+      }
+      setFileContentState((prev) => ({
+        ...prev,
+        [projectId]: {
+          loading: false,
+          error: "",
+          file: json,
+        },
+      }));
+    } catch (error) {
+      setFileContentState((prev) => ({
+        ...prev,
+        [projectId]: {
+          loading: false,
+          error: error?.message || "Failed to load file.",
+          file: null,
+        },
+      }));
+    }
+  });
+
+  const refreshSelectedFile = useEffectEvent(async () => {
+    if (!selectedFile) return;
+    try {
+      const response = await fetch(
+        `/api/projects/${selectedFile.projectId}/file?rootId=${encodeURIComponent(selectedFile.rootId || "main")}&path=${encodeURIComponent(selectedFile.path)}`,
+      );
+      const json = await response.json();
+      if (!response.ok || !json.ok) {
+        throw new Error(json.error || response.statusText);
+      }
+      setFileContentState((prev) => {
+        const current = prev[selectedFile.projectId];
+        if (current?.file?.mtimeMs && json.mtimeMs && current.file.mtimeMs === json.mtimeMs) {
+          return prev;
+        }
+        return {
+          ...prev,
+          [selectedFile.projectId]: {
+            loading: false,
+            error: "",
+            file: json,
+          },
+        };
+      });
+    } catch (error) {
+      setFileContentState((prev) => ({
+        ...prev,
+        [selectedFile.projectId]: {
+          loading: false,
+          error: error?.message || "Failed to refresh file.",
+          file: prev[selectedFile.projectId]?.file || null,
+        },
+      }));
+    }
+  });
+
+  const closeFilePreview = () => {
+    setSelectedFile(null);
+  };
+
+  const selectTreeRoot = (projectId, rootId) => {
+    setActiveTreeRootByProject((prev) => ({
+      ...prev,
+      [projectId]: rootId,
+    }));
+  };
+
+  const startPreviewResize = (event) => {
+    if (!selectedFile) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const pane = event.currentTarget.closest(".files-preview-pane");
+    const rect = pane?.getBoundingClientRect();
+    if (!rect) return;
+    previewResizeRef.current = {
+      startX: event.clientX,
+      startY: event.clientY,
+      startW: rect.width,
+      startH: rect.height,
+    };
+    const onMove = (moveEvent) => {
+      const state = previewResizeRef.current;
+      if (!state) return;
+      const nextWidth = Math.min(0.98 * window.innerWidth, Math.max(320, state.startW + (moveEvent.clientX - state.startX)));
+      const nextHeight = Math.min(0.95 * window.innerHeight, Math.max(220, state.startH + (moveEvent.clientY - state.startY)));
+      setPreviewSize({ width: nextWidth, height: nextHeight });
+    };
+    const onUp = () => {
+      previewResizeRef.current = null;
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  };
 
   useEffect(() => {
     activeRef.current = {
@@ -797,6 +1151,21 @@ export default function App() {
         case "snapshot": {
           const nextProjects = sortProjects(message.projects || []);
           setProjects(nextProjects);
+          setActiveTreeRootByProject((prev) => {
+            const next = { ...prev };
+            for (const project of nextProjects) {
+              if (!next[project.id]) next[project.id] = "main";
+            }
+            return next;
+          });
+          setProjectHistories(() =>
+            Object.fromEntries(
+              nextProjects.map((project) => [
+                project.id,
+                Array.isArray(project.history) ? project.history.slice(-200) : [],
+              ]),
+            ),
+          );
           ensureSelection(nextProjects);
           setStatus(
             nextProjects.length
@@ -806,17 +1175,27 @@ export default function App() {
           break;
         }
         case "project_created": {
+          setProjectHistories((prev) => ({
+            ...prev,
+            [message.project.id]: Array.isArray(message.project.history)
+              ? message.project.history.slice(-200)
+              : [],
+          }));
           setProjects((prev) => {
             const next = sortProjects(upsertProject(prev, message.project));
             ensureSelection(next);
             return next;
           });
+          setActiveTreeRootByProject((prev) => ({
+            ...prev,
+            [message.project.id]: "main",
+          }));
           setExpandedProjects((prev) => ({
             ...prev,
             [message.project.id]: true,
           }));
           setActiveProjectId(message.project.id);
-          setActiveTerminalId(message.project.terminals[0]?.id ?? null);
+          setActiveTerminalId(null);
           setPickerOpen(false);
           setCreatingProject(false);
           setStatus(`Created project ${message.project.name}.`);
@@ -824,17 +1203,27 @@ export default function App() {
         }
         case "project_existing": {
           const nextProject = message.project;
+          setProjectHistories((prev) => ({
+            ...prev,
+            [nextProject.id]: Array.isArray(nextProject.history)
+              ? nextProject.history.slice(-200)
+              : [],
+          }));
           setProjects((prev) => {
             const next = sortProjects(upsertProject(prev, nextProject));
             ensureSelection(next);
             return next;
           });
+          setActiveTreeRootByProject((prev) => ({
+            ...prev,
+            [nextProject.id]: "main",
+          }));
           setExpandedProjects((prev) => ({
             ...prev,
             [nextProject.id]: true,
           }));
           setActiveProjectId(nextProject.id);
-          setActiveTerminalId(nextProject.terminals[0]?.id ?? null);
+          setActiveTerminalId(null);
           setPickerOpen(false);
           setCreatingProject(false);
           setStatus(`Project already exists: ${nextProject.name}.`);
@@ -846,7 +1235,20 @@ export default function App() {
             ensureSelection(next);
             return next;
           });
+          setSelectedFile((prev) =>
+            prev?.projectId === message.projectId ? null : prev,
+          );
+          setProjectHistories((prev) => {
+            const next = { ...prev };
+            delete next[message.projectId];
+            return next;
+          });
           setExpandedProjects((prev) => {
+            const next = { ...prev };
+            delete next[message.projectId];
+            return next;
+          });
+          setActiveTreeRootByProject((prev) => {
             const next = { ...prev };
             delete next[message.projectId];
             return next;
@@ -876,6 +1278,60 @@ export default function App() {
           setStatus(`Created ${message.terminal.label}.`);
           break;
         }
+        case "project_root_added": {
+          setProjects((prev) =>
+            prev.map((project) =>
+              project.id === message.projectId
+                ? {
+                    ...project,
+                    roots: [...(project.roots || []), message.root].sort((a, b) =>
+                      a.kind === b.kind ? a.label.localeCompare(b.label) : a.kind === "main" ? -1 : 1,
+                    ),
+                  }
+                : project,
+            ),
+          );
+          setStatus(`Linked ${message.root?.label || "reference"}.`);
+          break;
+        }
+        case "project_root_removed": {
+          const rootId = String(message.rootId || "");
+          setProjects((prev) =>
+            prev.map((project) =>
+              project.id === message.projectId
+                ? {
+                    ...project,
+                    roots: (project.roots || []).filter((root) => root.id !== rootId),
+                  }
+                : project,
+            ),
+          );
+          setTreeState((prev) => {
+            const projectTrees = prev[message.projectId];
+            if (!projectTrees) return prev;
+            const nextProjectTrees = { ...projectTrees };
+            delete nextProjectTrees[rootId];
+            return {
+              ...prev,
+              [message.projectId]: nextProjectTrees,
+            };
+          });
+          setActiveTreeRootByProject((prev) => {
+            const currentRootId = prev[message.projectId] || "main";
+            if (currentRootId !== rootId) return prev;
+            return {
+              ...prev,
+              [message.projectId]: "main",
+            };
+          });
+          setSelectedFile((prev) =>
+            prev?.projectId === message.projectId && prev.rootId === rootId
+              ? null
+              : prev,
+          );
+          setStatus("Reference removed.");
+          break;
+        }
         case "terminal_renamed": {
           setProjects((prev) =>
             prev.map((project) =>
@@ -902,6 +1358,20 @@ export default function App() {
           );
           break;
         }
+        case "bus_event": {
+          const eventData = message.event || {};
+          const projectId = eventData.projectId ? String(eventData.projectId) : "";
+          if (projectId) {
+            setProjectHistories((prev) => {
+              const current = prev[projectId] || [];
+              return {
+                ...prev,
+                [projectId]: [...current, eventData].slice(-200),
+              };
+            });
+          }
+          break;
+        }
         case "terminal_closed": {
           setProjects((prev) => {
             const next = prev.map((project) =>
@@ -918,6 +1388,23 @@ export default function App() {
             return next;
           });
           setStatus("Terminal closed.");
+          break;
+        }
+        case "project_tree_changed": {
+          if (activeProjectId === message.projectId) {
+            const rootId = activeTreeRootByProject[message.projectId] || "main";
+            const shouldRefreshCurrentRoot =
+              !message.rootId || message.rootId === rootId;
+            const shouldRefreshSelectedFile =
+              selectedFile?.projectId === message.projectId &&
+              (!message.rootId || message.rootId === selectedFile.rootId);
+            if (shouldRefreshCurrentRoot) {
+              loadTree(message.projectId, rootId, ".");
+            }
+            if (shouldRefreshSelectedFile) {
+              refreshSelectedFile();
+            }
+          }
           break;
         }
         case "output": {
@@ -967,12 +1454,6 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (activeProject && !treeState[activeProject.id]?.["."]?.entries) {
-      loadTree(activeProject.id, ".");
-    }
-  }, [activeProject, treeState, loadTree]);
-
-  useEffect(() => {
     const onMove = (event) => {
       if (!resizingRef.current) return;
       const target = resizeTargetRef.current;
@@ -982,6 +1463,9 @@ export default function App() {
       } else if (target === "files") {
         const next = Math.min(640, Math.max(200, window.innerWidth - event.clientX));
         setFilesPanelWidth(next);
+      } else if (target === "bottom") {
+        const next = Math.min(800, Math.max(140, window.innerHeight - event.clientY));
+        setBottomPanelHeight(next);
       }
     };
     const onUp = () => {
@@ -1004,6 +1488,23 @@ export default function App() {
   };
 
   const openPicker = async () => {
+    setPickerMode("create");
+    setPickerOpen(true);
+    setCreatingProject(false);
+    try {
+      const roots = await loadPickerRoots();
+      await openDirectory(roots[0]?.path || "");
+    } catch (error) {
+      setStatus(error?.message || "Failed to open directory picker.");
+    }
+  };
+
+  const openReferencePicker = async () => {
+    if (!activeProject) {
+      setStatus("Select a project first.");
+      return;
+    }
+    setPickerMode("link");
     setPickerOpen(true);
     setCreatingProject(false);
     try {
@@ -1020,6 +1521,16 @@ export default function App() {
       return;
     }
     if (creatingProject) return;
+    if (pickerMode === "link") {
+      setPickerOpen(false);
+      send({
+        type: "add_project_root",
+        projectId: activeProjectId,
+        path: selectedPath,
+        label: selectedPath.split("/").filter(Boolean).pop() || "Reference",
+      });
+      return;
+    }
     setCreatingProject(true);
     setPickerOpen(false);
     const name = selectedPath.split("/").filter(Boolean).pop() || "Project";
@@ -1038,6 +1549,50 @@ export default function App() {
     }
     send({ type: "add_terminal", projectId: activeProjectId });
   };
+
+  const sendComposer = () => {
+    if (!activeProjectId || !activeTerminalId) {
+      setStatus("Select a terminal first.");
+      return;
+    }
+    const text = composerText.trim();
+    if (!text) return;
+    send({
+      type: "emit_event",
+      projectId: activeProjectId,
+      event: {
+        type: "user_message",
+        from: "browser",
+        to: activeTerminalId,
+        text,
+        appendEnter: true,
+      },
+    });
+    setComposerText("");
+  };
+
+  const handleComposerKeyDown = (event) => {
+    if (event.key !== "Enter" || event.shiftKey) return;
+    if (event.nativeEvent.isComposing) return;
+    event.preventDefault();
+    sendComposer();
+  };
+
+  const activeTreeRootId = activeProject
+    ? activeTreeRootByProject[activeProject.id] || "main"
+    : "main";
+  const treeRoot = activeProject
+    ? treeState[activeProject.id]?.[activeTreeRootId]?.["."]
+    : null;
+
+  useEffect(() => {
+    if (
+      activeProject &&
+      !treeState[activeProject.id]?.[activeTreeRootId]?.["."]?.entries
+    ) {
+      loadTree(activeProject.id, activeTreeRootId, ".");
+    }
+  }, [activeProject, activeTreeRootId, treeState, loadTree]);
 
   const toggleProject = (projectId) => {
     setExpandedProjects((prev) => ({
@@ -1075,15 +1630,60 @@ export default function App() {
         [node.path]: !(prev[activeProject.id] || {})[node.path],
       },
     }));
-    if (!treeState[activeProject.id]?.[node.path]) {
-      loadTree(activeProject.id, node.path);
+    if (!treeState[activeProject.id]?.[activeTreeRootId]?.[node.path]) {
+      loadTree(activeProject.id, activeTreeRootId, node.path);
     }
   };
-
-  const treeRoot = activeProject ? treeState[activeProject.id]?.["."] : null;
   const activeTreeExpanded = activeProject
     ? expandedDirectories[activeProject.id] || {}
     : {};
+  const activeHistory = activeProject ? projectHistories[activeProject.id] || [] : [];
+  const composerShellRef = useRef(null);
+  const historyEndRef = useRef(null);
+  const previewFile =
+    selectedFile && fileContentState[selectedFile.projectId]?.file
+      ? fileContentState[selectedFile.projectId].file
+      : null;
+  const previewMode = detectFileMode(previewFile?.name || selectedFile?.name || "");
+  const previewLines = formatPreviewLines(previewFile?.content || "");
+  const markdownDoc =
+    previewMode === "markdown" && previewFile?.content
+      ? parseMarkdownDocument(previewFile.content)
+      : { blocks: [], outline: [] };
+  const activePreviewKey = selectedFile
+    ? `${selectedFile.rootId || "main"}:${selectedFile.path}`
+    : "";
+
+  useEffect(() => {
+    const target = composerShellRef.current || historyEndRef.current;
+    target?.scrollIntoView?.({ block: "end", behavior: "smooth" });
+  }, [activeProjectId, activeHistory]);
+
+  useEffect(() => {
+    if (!activeProject) return;
+    if (!treeState[activeProject.id]?.[activeTreeRootId]?.["."]?.entries) {
+      loadTree(activeProject.id, activeTreeRootId, ".");
+    }
+  }, [activeProject, activeTreeRootId, treeState, loadTree]);
+
+  useEffect(() => {
+    if (!activeTerminal) return;
+    const raf = window.requestAnimationFrame(() => {
+      const terminalShellEl = terminalShellRef.current;
+      const bottomPanelEl = bottomPanelRef.current;
+      const gridEl = bottomPanelEl?.querySelector?.(".bottom-panel-grid");
+      const cardEls = bottomPanelEl?.querySelectorAll?.(".bottom-card");
+      console.debug("[amux bottom diag]", {
+        terminalShell: terminalShellEl?.getBoundingClientRect?.(),
+        bottomPanel: bottomPanelEl?.getBoundingClientRect?.(),
+        grid: gridEl?.getBoundingClientRect?.(),
+        cards: Array.from(cardEls || []).map((el) => el.getBoundingClientRect()),
+        bottomPanelHeight,
+      });
+    });
+    return () => window.cancelAnimationFrame(raf);
+  }, [activeTerminal, bottomPanelHeight]);
+
   return (
     <>
       <div className="app-shell">
@@ -1093,16 +1693,12 @@ export default function App() {
               <div className="sidebar-topbar">
                 <button
                   type="button"
-                  className="sidebar-icon-button"
+                  className="sidebar-icon-button sidebar-collapse-button"
                   onClick={() => setSidebarVisible(false)}
                   title="Hide sidebar"
                 >
                   <IconSidebar />
                 </button>
-                <span
-                  className={`connection-dot ${connectionState}`}
-                  title={`Connection: ${connectionState}`}
-                />
               </div>
 
               <div className="sidebar-actions">
@@ -1275,52 +1871,167 @@ export default function App() {
             />
           </>
         ) : (
-          <button
-            type="button"
-            className="sidebar-reopen"
-            onClick={() => setSidebarVisible(true)}
-            title="Show sidebar"
-          >
-            <IconSidebar />
-          </button>
+          null
         )}
 
         <main className="workspace-v3">
           <div className="workspace-content">
-            <section className="terminal-surface" style={{ flex: 1, minWidth: 0 }}>
-              <div className="mac-chrome">
-                <span className="mac-dot red" />
-                <span className="mac-dot yellow" />
-                <span className="mac-dot green" />
-                <div className="terminal-title">
-                  {activeTerminal
-                    ? `${activeTerminal.projectName} / ${activeTerminal.label}`
-                    : "AgentMux"}
+            <section className="terminal-column" style={{ flex: 1, minWidth: 0 }}>
+              <div
+                className="terminal-surface terminal-surface-top"
+                ref={terminalShellRef}
+                style={{
+                  height: `calc(100% - ${bottomPanelHeight}px - 2px)`,
+                }}
+              >
+                <div className="mac-chrome">
+                  {!sidebarVisible ? (
+                    <button
+                      type="button"
+                      className="sidebar-reopen inline"
+                      onClick={() => setSidebarVisible(true)}
+                      title="Show sidebar"
+                    >
+                      <IconSidebar />
+                    </button>
+                  ) : null}
+                  <div className="terminal-title">
+                    {activeTerminal
+                      ? `${activeTerminal.projectName} / ${activeTerminal.label}`
+                      : "AgentMux"}
+                  </div>
+                </div>
+                <div className="terminal-shell">
+                  {activeTerminal ? (
+                    <TerminalWorkspace
+                      ref={terminalApiRef}
+                      activeTerminal={activeTerminal}
+                      onInput={(projectId, terminalId, data) =>
+                        send({ type: "input", projectId, terminalId, data })
+                      }
+                      onResize={sendResize}
+                      onRequestSnapshot={(projectId, terminalId) =>
+                        send({ type: "request_snapshot", projectId, terminalId })
+                      }
+                    />
+                  ) : (
+                    <div className="terminal-empty-state">
+                      <div className="terminal-empty-icon">
+                        <IconTerminal />
+                      </div>
+                      <h2>未激活终端</h2>
+                      <p>先在左侧打开一个项目，然后点击对应终端。</p>
+                    </div>
+                  )}
                 </div>
               </div>
-              <div className="terminal-shell">
-                {activeTerminal ? (
-                  <TerminalWorkspace
-                    ref={terminalApiRef}
-                    activeTerminal={activeTerminal}
-                    onInput={(projectId, terminalId, data) =>
-                      send({ type: "input", projectId, terminalId, data })
-                    }
-                    onResize={sendResize}
-                    onRequestSnapshot={(projectId, terminalId) =>
-                      send({ type: "request_snapshot", projectId, terminalId })
-                    }
-                  />
-                ) : (
-                  <div className="terminal-empty-state">
-                    <div className="terminal-empty-icon">
-                      <IconTerminal />
-                    </div>
-                    <h2>未激活终端</h2>
-                    <p>先在左侧打开一个项目，然后点击对应终端。</p>
-                  </div>
-                )}
-              </div>
+
+              <div
+                className="terminal-bottom-resizer"
+                onMouseDown={startResize("bottom")}
+                role="separator"
+                aria-orientation="horizontal"
+                aria-label="Resize bottom panel"
+              />
+
+              <aside
+                className="bottom-panel"
+                ref={bottomPanelRef}
+                style={{ height: `${bottomPanelHeight}px` }}
+              >
+                <div className="bottom-panel-grid simple">
+                  <section className="bottom-card composer-card">
+                    <form
+                      onSubmit={(event) => {
+                        event.preventDefault();
+                        sendComposer();
+                      }}
+                    >
+                      <div className="composer-shell" ref={composerShellRef}>
+                        <div className="composer-history" aria-label="chat history">
+                          {activeHistory.length ? (
+                            activeHistory.map((event) => {
+                              const text = summarizeEvent(event);
+                              const detail = getEventDetail(event);
+                              const fromUser = event.from === "browser";
+                              return (
+                                <div
+                                  key={event.id || `${event.ts || 0}-${event.type || "event"}`}
+                                  className={`history-item ${
+                                    fromUser ? "from-user" : "from-agent"
+                                  } history-${event.type || "event"}`}
+                                >
+                                  <div className="history-meta">
+                                    <span className="history-origin">
+                                      {formatEventOrigin(event, activeProject)}
+                                    </span>
+                                    <span className="history-type">
+                                      {formatEventKind(event)}
+                                    </span>
+                                    {formatEventTarget(event, activeProject) ? (
+                                      <span className="history-target">
+                                        {"→"} {formatEventTarget(event, activeProject)}
+                                      </span>
+                                    ) : null}
+                                  </div>
+                                  {text ? <div className="history-text">{text}</div> : null}
+                                  {detail && detail !== text ? (
+                                    <details
+                                      className="history-details"
+                                      open={
+                                        event.type === "done" ||
+                                        event.type === "agent_reply" ||
+                                        event.type === "require_confirmation"
+                                      }
+                                    >
+                                      <summary>详情</summary>
+                                      <div className="history-detail-text">
+                                        {detail}
+                                      </div>
+                                    </details>
+                                  ) : null}
+                                </div>
+                              );
+                            })
+                          ) : (
+                            <div className="history-empty">当前项目还没有协作事件。</div>
+                          )}
+                          <div ref={historyEndRef} />
+                        </div>
+                        <textarea
+                          id="composer-input"
+                          className="composer-input"
+                          value={composerText}
+                          onChange={(event) => setComposerText(event.target.value)}
+                          placeholder="输入命令或文本，Enter 发送，Shift+Enter 换行"
+                          onKeyDown={handleComposerKeyDown}
+                        />
+                        <div className="composer-toolbar">
+                          <button type="button" className="composer-tool active">
+                            完全访问权限
+                          </button>
+                          <button type="button" className="composer-tool">
+                            GPT-5.4-Mini
+                          </button>
+                          <button type="button" className="composer-tool">
+                            低
+                          </button>
+                          <button type="button" className="composer-tool">
+                            事件中心
+                          </button>
+                          <button
+                            type="button"
+                            className="composer-send"
+                            onClick={sendComposer}
+                          >
+                            发送
+                          </button>
+                        </div>
+                      </div>
+                    </form>
+                  </section>
+                </div>
+              </aside>
             </section>
 
             <div
@@ -1337,37 +2048,141 @@ export default function App() {
             >
               <div className="files-header">
                 <span>{activeProject ? activeProject.name : "文件树"}</span>
-                {activeProject ? (
-                  <button
-                    type="button"
-                    className="thread-action"
-                    onClick={() => loadTree(activeProject.id, ".")}
-                  >
-                    刷新
-                  </button>
-                ) : null}
+                <div className="files-header-actions">
+                  {activeProject ? (
+                    <button
+                      type="button"
+                      className="files-link-button"
+                      onClick={openReferencePicker}
+                    >
+                      关联目录
+                    </button>
+                  ) : null}
+                </div>
               </div>
-              <div className="files-body">
-                {!activeProject ? (
-                  <div className="tree-empty">先选择一个项目。</div>
-                ) : treeRoot?.loading ? (
-                  <div className="tree-loading">Loading…</div>
-                ) : treeRoot?.error ? (
-                  <div className="tree-error">{treeRoot.error}</div>
-                ) : treeRoot?.entries?.length ? (
-                  treeRoot.entries.map((node) => (
-                    <TreeNode
-                      key={node.path}
-                      node={node}
-                      expanded={activeTreeExpanded}
-                      onToggle={toggleDirectory}
-                      loadedEntry={treeState[activeProject.id]}
-                      depth={0}
-                    />
-                  ))
-                ) : (
-                  <div className="tree-empty">No visible files.</div>
-                )}
+              <div className="files-root-strip">
+                {activeProject?.roots?.map((root) => {
+                  const isActive = activeTreeRootId === root.id;
+                  const canRemove = root.kind !== "main";
+                  return (
+                    <span key={root.id} className={`files-root-chip-wrap ${isActive ? "active" : ""}`}>
+                      <button
+                        type="button"
+                        className={`files-root-chip ${isActive ? "active" : ""}`}
+                        onClick={() => {
+                          selectTreeRoot(activeProject.id, root.id);
+                          if (!treeState[activeProject.id]?.[root.id]?.["."]?.entries) {
+                            loadTree(activeProject.id, root.id, ".");
+                          }
+                        }}
+                        title={root.path}
+                      >
+                        {root.label}
+                      </button>
+                      {canRemove ? (
+                          <button
+                            type="button"
+                            className="files-root-remove"
+                            title="移除引用目录"
+                            onClick={() =>
+                              send({
+                                type: "remove_project_root",
+                                projectId: activeProject.id,
+                                rootId: String(root.id || ""),
+                              })
+                            }
+                          >
+                          ×
+                        </button>
+                      ) : null}
+                    </span>
+                  );
+                })}
+              </div>
+              <div
+                className={`files-body ${selectedFile ? "split" : "tree-only"}`}
+              >
+                <div className="files-tree-pane">
+                  {!activeProject ? (
+                    <div className="tree-empty">先选择一个项目。</div>
+                  ) : treeRoot?.loading ? (
+                    <div className="tree-loading">Loading…</div>
+                  ) : treeRoot?.error ? (
+                    <div className="tree-error">{treeRoot.error}</div>
+                  ) : treeRoot?.entries?.length ? (
+                    treeRoot.entries.map((node) => (
+                      <TreeNode
+                        key={node.path}
+                        node={node}
+                        rootId={activeTreeRootId}
+                        expanded={activeTreeExpanded}
+                        onToggle={toggleDirectory}
+                        loadedEntry={treeState[activeProject.id]?.[activeTreeRootId]}
+                        depth={0}
+                        onOpenFile={(fileNode) =>
+                          openFile(
+                            activeProject.id,
+                            activeTreeRootId,
+                            fileNode.path,
+                            fileNode.name,
+                          )
+                        }
+                        activePreviewKey={activePreviewKey}
+                      />
+                    ))
+                  ) : (
+                    <div className="tree-empty">No visible files.</div>
+                  )}
+                </div>
+                {selectedFile ? (
+                  <div className="files-preview-pane">
+                    <button
+                      type="button"
+                      className="file-preview-close"
+                      onClick={closeFilePreview}
+                      aria-label="Close preview"
+                      title="关闭预览"
+                    >
+                      ×
+                    </button>
+                    {fileContentState[selectedFile.projectId]?.loading ? (
+                      <div className="tree-loading">Loading file…</div>
+                    ) : fileContentState[selectedFile.projectId]?.error ? (
+                      <div className="tree-error">
+                        {fileContentState[selectedFile.projectId].error}
+                      </div>
+                    ) : fileContentState[selectedFile.projectId]?.file ? (
+                      <>
+                        {previewMode === "markdown" ? (
+                          <div className={`file-preview-content mode-${previewMode}`}>
+                            <div className="md-render">
+                              {markdownDoc.blocks}
+                            </div>
+                          </div>
+                        ) : (
+                          <div className={`file-preview-content mode-${previewMode}`}>
+                            <div className="file-preview-line-nums" aria-hidden="true">
+                              {previewLines.map((line) => (
+                                <div key={line.number} className="file-preview-line-num">
+                                  {line.number}
+                                </div>
+                              ))}
+                            </div>
+                            <pre className="file-preview-code">
+                              {previewLines.map((line) => (
+                                <div key={line.number} className="file-preview-line">
+                                  {line.text || "\u00a0"}
+                                </div>
+                              ))}
+                            </pre>
+                          </div>
+                        )}
+                      </>
+                    ) : (
+                      <div className="tree-empty">No file loaded.</div>
+                    )}
+                  </div>
+                ) : null}
               </div>
             </aside>
           </div>
@@ -1392,6 +2207,7 @@ export default function App() {
 
       <DirectoryPickerModal
         open={pickerOpen}
+        mode={pickerMode}
         roots={pickerRoots}
         currentPath={pickerPath}
         listing={pickerListing}

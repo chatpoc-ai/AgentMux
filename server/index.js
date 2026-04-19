@@ -5,7 +5,7 @@ const path = require("path");
 const fs = require("fs");
 const os = require("os");
 const { randomUUID } = require("crypto");
-const { spawn, execFileSync } = require("child_process");
+const { execFileSync } = require("child_process");
 const express = require("express");
 const WebSocket = require("ws");
 const {
@@ -92,6 +92,15 @@ function resolveProjectPath(root, requested = "") {
     throw new Error("path_outside_project");
   }
   return abs;
+}
+
+function makeProjectRoot(id, label, absPath, kind = "linked") {
+  return {
+    id,
+    label,
+    path: absPath,
+    kind,
+  };
 }
 
 /**
@@ -184,6 +193,11 @@ function listDirectoryChoices(absPath) {
   };
 }
 
+function getProjectRoot(project, rootId = "main") {
+  if (!project) return null;
+  return project.roots.find((root) => root.id === rootId) || project.roots[0] || null;
+}
+
 class TerminalSession {
   constructor(projectId, index, cwd, logPath) {
     this.projectId = projectId;
@@ -193,8 +207,11 @@ class TerminalSession {
     this.id = randomUUID().replace(/-/g, "").slice(0, 8);
     this.name = safeSessionName(projectId, index, this.id);
     this.label = `Agent ${index + 1}`;
-    /** @type {import('child_process').ChildProcess | null} */
-    this.tail = null;
+    this.lastReadPos = 0;
+    /** @type {NodeJS.Timeout[]} */
+    this.streamTimers = [];
+    /** @type {fs.FSWatcher | null} */
+    this.streamWatcher = null;
   }
 }
 
@@ -206,6 +223,10 @@ class ProjectSession {
     this.baseDir = path.join(PROJECTS_DIR, this.id);
     /** @type {TerminalSession[]} */
     this.terminals = [];
+    /** @type {Array<{id:string,label:string,path:string,kind:string}>} */
+    this.roots = [makeProjectRoot("main", "主目录", cwd, "main")];
+    /** @type {Array<object>} */
+    this.history = [];
   }
 }
 
@@ -225,6 +246,10 @@ class AgentMuxServer {
     /** @type {Set<import("ws").WebSocket>} */
     this.clients = new Set();
     this._saveTimer = null;
+    /** @type {Map<string, fs.FSWatcher>} */
+    this.projectWatchers = new Map();
+    /** @type {Map<string, NodeJS.Timeout>} */
+    this.projectRefreshTimers = new Map();
   }
 
   persistSnapshot() {
@@ -235,6 +260,13 @@ class AgentMuxServer {
         id: project.id,
         cwd: project.cwd,
         name: project.name,
+        roots: project.roots.map((root) => ({
+          id: root.id,
+          label: root.label,
+          path: root.path,
+          kind: root.kind,
+        })),
+        history: project.history.slice(-200),
         terminals: project.terminals.map((term) => ({
           id: term.id,
           index: term.index,
@@ -278,6 +310,21 @@ class AgentMuxServer {
       project.baseDir = path.join(PROJECTS_DIR, project.id);
       fs.mkdirSync(project.baseDir, { recursive: true });
       ensureExtraInstructionFile(project.baseDir);
+      project.roots = Array.isArray(entry.roots) && entry.roots.length
+        ? entry.roots
+            .filter((root) => root?.path && fs.existsSync(root.path))
+            .map((root) =>
+              makeProjectRoot(
+                root.id || randomUUID().replace(/-/g, "").slice(0, 12),
+                root.label || path.basename(root.path) || "Reference",
+                root.path,
+                root.kind || "linked",
+              ),
+            )
+        : [makeProjectRoot("main", "主目录", project.cwd, "main")];
+      if (!project.roots.some((root) => root.kind === "main")) {
+        project.roots.unshift(makeProjectRoot("main", "主目录", project.cwd, "main"));
+      }
 
       for (const termEntry of entry.terminals || []) {
         const logPath =
@@ -303,8 +350,10 @@ class AgentMuxServer {
         }
       }
 
+      project.history = Array.isArray(entry.history) ? entry.history.slice(-200) : [];
       project.terminals.sort((a, b) => a.index - b.index);
       this.projects.set(project.id, project);
+      this._ensureProjectWatchers(project);
     }
     if (this.projects.size) {
       console.log(
@@ -315,11 +364,88 @@ class AgentMuxServer {
 
   /**
    * @param {ProjectSession} project
+   */
+  _ensureProjectWatchers(project) {
+    for (const root of project.roots || []) {
+      const key = `${project.id}:${root.id}`;
+      if (this.projectWatchers.has(key)) continue;
+      try {
+        const watcher = fs.watch(root.path, { recursive: true }, () => {
+          const existing = this.projectRefreshTimers.get(key);
+          if (existing) clearTimeout(existing);
+          const timer = setTimeout(() => {
+            this.projectRefreshTimers.delete(key);
+            this.broadcast({
+              type: "project_tree_changed",
+              projectId: project.id,
+              rootId: root.id,
+            });
+          }, 200);
+          this.projectRefreshTimers.set(key, timer);
+        });
+        this.projectWatchers.set(key, watcher);
+      } catch (err) {
+        console.error(
+          `Failed to watch project root ${project.id}:${root.id}: ${err?.message || err}`,
+        );
+      }
+    }
+  }
+
+  /**
+   * @param {string} projectId
+   */
+  _clearProjectWatcher(projectId) {
+    for (const [key, watcher] of [...this.projectWatchers.entries()]) {
+      if (!key.startsWith(`${projectId}:`)) continue;
+      try {
+        watcher.close();
+      } catch {
+        /* ignore */
+      }
+      this.projectWatchers.delete(key);
+    }
+    for (const [key, timer] of [...this.projectRefreshTimers.entries()]) {
+      if (!key.startsWith(`${projectId}:`)) continue;
+      clearTimeout(timer);
+      this.projectRefreshTimers.delete(key);
+    }
+  }
+
+  /**
+   * @param {string} projectId
+   * @param {string} rootId
+   */
+  _clearProjectRootWatcher(projectId, rootId) {
+    const key = `${projectId}:${rootId}`;
+    const watcher = this.projectWatchers.get(key);
+    if (watcher) {
+      try {
+        watcher.close();
+      } catch {
+        /* ignore */
+      }
+      this.projectWatchers.delete(key);
+    }
+    const timer = this.projectRefreshTimers.get(key);
+    if (timer) {
+      clearTimeout(timer);
+      this.projectRefreshTimers.delete(key);
+    }
+  }
+
+  /**
+   * @param {ProjectSession} project
    * @param {TerminalSession} term
    */
   _restoreTerminal(project, term) {
     if (!fs.existsSync(term.logPath)) {
       fs.writeFileSync(term.logPath, "");
+    }
+    try {
+      term.lastReadPos = fs.statSync(term.logPath).size;
+    } catch {
+      term.lastReadPos = 0;
     }
     const alive = tmuxSessionExists(term.name);
     if (!alive) {
@@ -367,7 +493,7 @@ class AgentMuxServer {
         /* ignore */
       }
     }
-    this._startTail(project, term);
+    this._startLogStreaming(project, term);
   }
 
   /**
@@ -378,6 +504,13 @@ class AgentMuxServer {
       id: project.id,
       name: project.name,
       cwd: project.cwd,
+      roots: project.roots.map((root) => ({
+        id: root.id,
+        label: root.label,
+        path: root.path,
+        kind: root.kind,
+      })),
+      history: project.history.slice(-200),
       terminals: project.terminals.map((term) => ({
         id: term.id,
         index: term.index,
@@ -442,11 +575,15 @@ class AgentMuxServer {
       ts: Date.now(),
       projectId,
     };
+    const project = this.projects.get(projectId);
+    if (project) {
+      project.history = [...project.history, enriched].slice(-200);
+      this.schedulePersist();
+    }
     this.broadcast({ type: "bus_event", event: enriched });
 
     const to = ev.to;
     if (!to || typeof to !== "string") return;
-    const project = this.projects.get(projectId);
     const target = project?.terminals.find((term) => term.id === to);
     if (!target) return;
 
@@ -508,6 +645,7 @@ class AgentMuxServer {
     }
 
     this.projects.set(project.id, project);
+    this._ensureProjectWatchers(project);
     this.broadcast({
       type: "project_created",
       project: this.serializeProject(project),
@@ -541,6 +679,52 @@ class AgentMuxServer {
     return term;
   }
 
+  addProjectRoot(projectId, absPath, label) {
+    const project = this.projects.get(projectId);
+    if (!project) return null;
+    const resolved = path.resolve(absPath || "");
+    if (!resolved || !fs.existsSync(resolved)) return null;
+    const stats = fs.statSync(resolved);
+    if (!stats.isDirectory()) return null;
+    if (project.roots.some((root) => root.path === resolved)) {
+      return project.roots.find((root) => root.path === resolved) || null;
+    }
+    const root = makeProjectRoot(
+      randomUUID().replace(/-/g, "").slice(0, 12),
+      label || path.basename(resolved) || "Reference",
+      resolved,
+      "linked",
+    );
+    project.roots.push(root);
+    this._ensureProjectWatchers(project);
+    this.schedulePersist();
+    this.broadcast({
+      type: "project_root_added",
+      projectId,
+      root,
+    });
+    return root;
+  }
+
+  removeProjectRoot(projectId, rootId) {
+    const project = this.projects.get(projectId);
+    if (!project) return false;
+    if (!rootId || rootId === "main") return false;
+    const index = project.roots.findIndex(
+      (root) => root.id === rootId || root.path === rootId,
+    );
+    if (index === -1) return false;
+    const [removed] = project.roots.splice(index, 1);
+    this._clearProjectRootWatcher(projectId, removed.id);
+    this.schedulePersist();
+    this.broadcast({
+      type: "project_root_removed",
+      projectId,
+      rootId: removed.id,
+    });
+    return true;
+  }
+
   /**
    * @param {ProjectSession} project
    * @param {number} index
@@ -567,7 +751,7 @@ class AgentMuxServer {
       `cat >> ${shSingleQuote(logPath)}`,
     ]);
 
-    this._startTail(project, term);
+    this._startLogStreaming(project, term);
 
     const vars = buildPromptVars({
       groupId: project.id,
@@ -600,35 +784,68 @@ class AgentMuxServer {
    * @param {ProjectSession} project
    * @param {TerminalSession} term
    */
-  _startTail(project, term) {
-    // -F follows the log across truncations/rotations; -n 0 skips the
-    // historical log and only forwards *new* bytes. We deliberately do NOT
-    // replay the log file (used to be `-n +0`): cursor-agent uses an
-    // alt-screen TUI and the log contains every partial frame/cursor move.
-    // Replaying that linearly onto a fresh xterm produces stacked/garbled
-    // output. For historical view-on-switch we use tmux capture-pane.
-    const tail = spawn("tail", ["-F", "-n", "0", term.logPath], {
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    term.tail = tail;
-    tail.stdout.on("data", (buf) => {
-      this.processTailChunk(project.id, term.id, term, buf);
-    });
-    tail.stderr.on("data", (buf) => {
-      this.broadcast({
-        type: "error",
-        message: buf.toString("utf8").trim(),
-      });
-    });
-    tail.on("error", (err) => {
-      this.broadcast({
-        type: "error",
-        message: `tail failed: ${err.message}`,
-      });
-    });
-    tail.on("close", () => {
-      term.tail = null;
-    });
+  _startLogStreaming(project, term) {
+    const readFn = () => this._readLogChunk(project.id, term.id, term);
+
+    const poll = setInterval(readFn, 80);
+    term.streamTimers.push(poll);
+
+    try {
+      term.streamWatcher = fs.watch(term.logPath, readFn);
+    } catch {
+      /* fallback to polling only */
+    }
+
+    readFn();
+  }
+
+  /**
+   * @param {string} projectId
+   * @param {string} terminalId
+   * @param {TerminalSession} term
+   */
+  _readLogChunk(projectId, terminalId, term) {
+    try {
+      const stat = fs.statSync(term.logPath);
+      if (stat.size <= term.lastReadPos) {
+        if (stat.size < term.lastReadPos) {
+          term.lastReadPos = 0;
+        } else {
+          return;
+        }
+      }
+
+      const fd = fs.openSync(term.logPath, "r");
+      const len = stat.size - term.lastReadPos;
+      const buf = Buffer.alloc(len);
+      fs.readSync(fd, buf, 0, len, term.lastReadPos);
+      fs.closeSync(fd);
+      term.lastReadPos = stat.size;
+
+      if (buf.length > 0) {
+        this.processTailChunk(projectId, terminalId, term, buf);
+      }
+    } catch {
+      /* file may be temporarily unavailable */
+    }
+  }
+
+  /**
+   * @param {TerminalSession} term
+   */
+  _stopLogStreaming(term) {
+    for (const timer of term.streamTimers) {
+      clearInterval(timer);
+    }
+    term.streamTimers = [];
+    if (term.streamWatcher) {
+      try {
+        term.streamWatcher.close();
+      } catch {
+        /* ignore */
+      }
+      term.streamWatcher = null;
+    }
   }
 
   /**
@@ -640,6 +857,7 @@ class AgentMuxServer {
     const project = this.projects.get(projectId);
     const term = project?.terminals.find((item) => item.id === terminalId);
     if (!term) return;
+    term.lastReadPos = 0;
     try {
       tmux(["send-keys", "-t", `${term.name}:0`, "-l", data]);
     } catch (e) {
@@ -756,10 +974,7 @@ class AgentMuxServer {
     const index = project.terminals.findIndex((term) => term.id === terminalId);
     if (index === -1) return;
     const term = project.terminals[index];
-    if (term.tail) {
-      term.tail.kill("SIGTERM");
-      term.tail = null;
-    }
+    this._stopLogStreaming(term);
     try {
       tmux(["kill-session", "-t", term.name]);
     } catch (e) {
@@ -789,10 +1004,7 @@ class AgentMuxServer {
     const project = this.projects.get(projectId);
     if (!project) return;
     for (const term of project.terminals) {
-      if (term.tail) {
-        term.tail.kill("SIGTERM");
-        term.tail = null;
-      }
+      this._stopLogStreaming(term);
       try {
         tmux(["kill-session", "-t", term.name]);
       } catch {
@@ -800,6 +1012,7 @@ class AgentMuxServer {
       }
     }
     this.projects.delete(projectId);
+    this._clearProjectWatcher(projectId);
     try {
       fs.rmSync(project.baseDir, { recursive: true, force: true });
     } catch {
@@ -818,11 +1031,11 @@ class AgentMuxServer {
   detachAll() {
     for (const project of this.projects.values()) {
       for (const term of project.terminals) {
-        if (term.tail) {
-          try { term.tail.kill("SIGTERM"); } catch { /* ignore */ }
-          term.tail = null;
-        }
+        this._stopLogStreaming(term);
       }
+    }
+    for (const projectId of [...this.projects.keys()]) {
+      this._clearProjectWatcher(projectId);
     }
   }
 }
@@ -894,9 +1107,15 @@ app.get("/api/projects/:projectId/tree", (req, res) => {
     res.status(404).json({ ok: false, error: "unknown_project" });
     return;
   }
+  const rootId = typeof req.query.rootId === "string" ? req.query.rootId : "main";
   const requested = typeof req.query.path === "string" ? req.query.path : "";
   try {
-    const absPath = resolveProjectPath(project.cwd, requested);
+    const root = getProjectRoot(project, rootId);
+    if (!root) {
+      res.status(404).json({ ok: false, error: "unknown_root" });
+      return;
+    }
+    const absPath = resolveProjectPath(root.path, requested);
     const stats = fs.statSync(absPath);
     if (!stats.isDirectory()) {
       res.status(400).json({ ok: false, error: "path_not_directory" });
@@ -905,14 +1124,62 @@ app.get("/api/projects/:projectId/tree", (req, res) => {
     res.json({
       ok: true,
       projectId: project.id,
-      cwd: project.cwd,
-      path: path.relative(project.cwd, absPath) || ".",
-      entries: listTreeEntries(project.cwd, absPath),
+      cwd: root.path,
+      rootId: root.id,
+      rootLabel: root.label,
+      path: path.relative(root.path, absPath) || ".",
+      entries: listTreeEntries(root.path, absPath),
     });
   } catch (error) {
     res.status(400).json({
       ok: false,
       error: error?.message || "tree_failed",
+    });
+  }
+});
+
+app.get("/api/projects/:projectId/file", (req, res) => {
+  const project = mux.projects.get(String(req.params.projectId || ""));
+  if (!project) {
+    res.status(404).json({ ok: false, error: "unknown_project" });
+    return;
+  }
+  const rootId = typeof req.query.rootId === "string" ? req.query.rootId : "main";
+  const requested = typeof req.query.path === "string" ? req.query.path : "";
+  if (!requested) {
+    res.status(400).json({ ok: false, error: "missing_path" });
+    return;
+  }
+  try {
+    const root = getProjectRoot(project, rootId);
+    if (!root) {
+      res.status(404).json({ ok: false, error: "unknown_root" });
+      return;
+    }
+    const absPath = resolveProjectPath(root.path, requested);
+    const stats = fs.statSync(absPath);
+    if (!stats.isFile()) {
+      res.status(400).json({ ok: false, error: "path_not_file" });
+      return;
+    }
+    const maxBytes = 256 * 1024;
+    const data = fs.readFileSync(absPath);
+    const truncated = data.length > maxBytes;
+    res.json({
+      ok: true,
+      projectId: project.id,
+      rootId: root.id,
+      path: path.relative(root.path, absPath) || path.basename(absPath),
+      name: path.basename(absPath),
+      size: stats.size,
+      mtimeMs: stats.mtimeMs,
+      truncated,
+      content: data.slice(0, maxBytes).toString("utf8"),
+    });
+  } catch (error) {
+    res.status(400).json({
+      ok: false,
+      error: error?.message || "file_failed",
     });
   }
 });
@@ -1008,6 +1275,36 @@ wss.on("connection", (ws) => {
       }
       case "add_terminal": {
         mux.addTerminal(String(msg.projectId || ""));
+        break;
+      }
+      case "add_project_root": {
+        const projectId = String(msg.projectId || "");
+        const absPath = String(msg.path || "").trim();
+        const label = msg.label ? String(msg.label).trim() : "";
+        const root = mux.addProjectRoot(projectId, absPath, label);
+        if (!root) {
+          ws.send(
+            JSON.stringify({
+              type: "error",
+              message: "add_project_root_failed",
+            }),
+          );
+        }
+        break;
+      }
+      case "remove_project_root": {
+        const ok = mux.removeProjectRoot(
+          String(msg.projectId || ""),
+          String(msg.rootId || ""),
+        );
+        if (!ok) {
+          ws.send(
+            JSON.stringify({
+              type: "error",
+              message: "remove_project_root_failed",
+            }),
+          );
+        }
         break;
       }
       case "rename_terminal": {
