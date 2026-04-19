@@ -14,6 +14,216 @@ import "xterm/css/xterm.css";
 
 const SIDEBAR_MIN = 260;
 const SIDEBAR_MAX = 520;
+const LANG_STORAGE_KEY = "agentmux.lang";
+const SETTINGS_STORAGE_KEY = "agentmux.settings";
+
+const filterHistoryEntries = (entries) =>
+  (Array.isArray(entries) ? entries : []).filter(
+    (entry) => entry && entry.type !== "terminal_input",
+  );
+
+const I18N = {
+  en: {
+    appName: "AgentMux",
+    showSidebar: "Show sidebar",
+    hideSidebar: "Hide sidebar",
+    newTerminal: "New terminal",
+    projects: "Projects",
+    newProject: "New project",
+    deleteProject: "Delete project",
+    settings: "Settings",
+    inputLabel: "Input",
+    sendToCurrentTerminal: "Send to current terminal",
+    send: "Send",
+    clear: "Clear",
+    access: "Full access",
+    model: "GPT-5.4-Mini",
+    effort: "Low",
+    eventCenter: "Event center",
+    terminalEmptyTitle: "No active terminal",
+    terminalEmptyBody: "Open a project on the left, then click a terminal.",
+    projectHint: "Select a project first.",
+    terminalHint: "Select a terminal first.",
+    wsNotReady: "WebSocket not ready.",
+    wsConnecting: "Connecting to AgentMux server…",
+    wsConnected: "Connected.",
+    wsDisconnected: "Disconnected from server.",
+    wsFailed: "WebSocket connection failed.",
+    workspaceSynced: "Workspace synced.",
+    noProjects: "No projects yet. Click the folder-plus icon to add one.",
+    projectRemoved: "Project removed.",
+    terminalClosed: "Terminal closed.",
+    referenceRemoved: "Reference removed.",
+    linkedReference: "Linked {label}.",
+    createdProject: "Created project {name}.",
+    projectExists: "Project already exists: {name}.",
+    createdTerminal: "Created {label}.",
+    renamedTerminal: "Renamed terminal to {label}.",
+    noVisibleFiles: "No visible files.",
+    selectProjectFirst: "Select a project first.",
+    fileTreeTitle: "File tree",
+    referenceDir: "Reference directory",
+    mainRoot: "Main",
+    linkDirectory: "Link directory",
+    removeLinkedRoot: "Remove linked directory",
+    selectProjectFolder: "Select project folder",
+    linkReferenceDir: "Link reference directory",
+    chooseThisFolder: "Choose this folder",
+    linkThisDir: "Link this directory",
+    loading: "Loading…",
+    loadingFiles: "Loading file…",
+    noFoldersHere: "No folders here.",
+    noFileLoaded: "No file loaded.",
+    closePreview: "Close preview",
+    back: "Back",
+    currentProjectNoEvents: "This project has no collaboration events yet.",
+    inputPlaceholder: "Type command or text, Enter to send, Shift+Enter for newline",
+    english: "English",
+    chinese: "中文",
+    language: "Language",
+    treeOnly: "Tree only",
+    treePreview: "Tree + preview",
+    projectFiles: "Project files",
+    manualInput: "Manual input",
+    collaborationHistory: "Collaboration history",
+    projectSelectHint: "Click a project, then choose a terminal.",
+    rootRemoved: "Reference directory removed.",
+    settingsOverview: "Configure the app language and the default CLI used for new terminals.",
+    uiLanguage: "UI language",
+    uiLanguageDesc: "Language used by the app UI",
+    defaultCli: "Default terminal CLI",
+    defaultCliDesc: "Default CLI for newly created terminals",
+    defaultModel: "Default model",
+    defaultModelDesc: "Default model for newly created terminals",
+    settingsSubtitle: "General",
+    backToApp: "Back to app",
+    cursorCli: "Cursor Agent",
+    codexCli: "Codex CLI",
+    cursorModel: "auto",
+    codexModel: "GPT-5.4-Mini",
+    settingsSaved: "Settings saved.",
+    settingsApply: "Save settings",
+    settingsSubtitle: "General",
+    resizeSidebar: "Resize sidebar",
+    resizeBottomPanel: "Resize bottom panel",
+    resizeFilesPanel: "Resize files panel",
+    doubleClickRename: "Double click to rename",
+    closeTerminal: "Close terminal",
+    confirmCloseTerminal: "Close terminal {label}?",
+    details: "Details",
+    serverError: "Server error",
+    dismiss: "Dismiss",
+  },
+  zh: {
+    appName: "AgentMux",
+    showSidebar: "显示侧边栏",
+    hideSidebar: "隐藏侧边栏",
+    newTerminal: "新终端",
+    projects: "项目",
+    newProject: "新项目",
+    deleteProject: "删除项目",
+    settings: "设置",
+    inputLabel: "输入",
+    sendToCurrentTerminal: "发送到当前终端",
+    send: "发送",
+    clear: "清空",
+    access: "完全访问权限",
+    model: "GPT-5.4-Mini",
+    effort: "低",
+    eventCenter: "事件中心",
+    terminalEmptyTitle: "未激活终端",
+    terminalEmptyBody: "先在左侧打开一个项目，然后点击对应终端。",
+    projectHint: "请先选择一个项目。",
+    terminalHint: "请选择一个终端。",
+    wsNotReady: "WebSocket 未就绪。",
+    wsConnecting: "正在连接 AgentMux 服务器…",
+    wsConnected: "已连接。",
+    wsDisconnected: "已从服务器断开。",
+    wsFailed: "WebSocket 连接失败。",
+    workspaceSynced: "工作区已同步。",
+    noProjects: "当前还没有项目。点击左上角的新项目按钮添加一个。",
+    projectRemoved: "项目已删除。",
+    terminalClosed: "终端已关闭。",
+    referenceRemoved: "引用目录已移除。",
+    linkedReference: "已关联 {label}。",
+    createdProject: "已创建项目 {name}。",
+    projectExists: "项目已存在：{name}。",
+    createdTerminal: "已创建 {label}。",
+    renamedTerminal: "终端已重命名为 {label}。",
+    noVisibleFiles: "没有可见文件。",
+    selectProjectFirst: "请先选择一个项目。",
+    fileTreeTitle: "文件树",
+    referenceDir: "引用目录",
+    mainRoot: "主目录",
+    linkDirectory: "关联目录",
+    removeLinkedRoot: "移除引用目录",
+    selectProjectFolder: "选择项目文件夹",
+    linkReferenceDir: "关联引用目录",
+    chooseThisFolder: "选择这个文件夹",
+    linkThisDir: "关联这个目录",
+    loading: "加载中…",
+    loadingFiles: "正在加载文件…",
+    noFoldersHere: "这里没有文件夹。",
+    noFileLoaded: "未加载文件。",
+    closePreview: "关闭预览",
+    back: "返回上级",
+    currentProjectNoEvents: "当前项目还没有协作事件。",
+    inputPlaceholder: "输入命令或文本，Enter 发送，Shift+Enter 换行",
+    english: "English",
+    chinese: "中文",
+    language: "语言",
+    treeOnly: "仅树视图",
+    treePreview: "树 + 预览",
+    projectFiles: "项目文件",
+    manualInput: "手动输入",
+    collaborationHistory: "协作历史",
+    projectSelectHint: "先点项目，再选终端。",
+    rootRemoved: "引用目录已移除。",
+    settingsOverview: "配置应用语言和新终端的默认 CLI。",
+    uiLanguage: "界面语言",
+    uiLanguageDesc: "应用界面显示语言",
+    defaultCli: "默认终端 CLI",
+    defaultCliDesc: "新终端默认使用的 CLI",
+    defaultModel: "默认模型",
+    defaultModelDesc: "新终端默认使用的模型",
+    settingsSubtitle: "常规",
+    backToApp: "返回应用",
+    cursorCli: "Cursor Agent",
+    codexCli: "Codex CLI",
+    cursorModel: "auto",
+    codexModel: "GPT-5.4-Mini",
+    settingsSaved: "设置已保存。",
+    settingsApply: "保存设置",
+    settingsSubtitle: "常规",
+    resizeSidebar: "调整侧边栏",
+    resizeBottomPanel: "调整底部面板",
+    resizeFilesPanel: "调整文件面板",
+    doubleClickRename: "双击改名",
+    closeTerminal: "关闭终端",
+    confirmCloseTerminal: "关闭终端 {label}？",
+    details: "详情",
+    serverError: "服务器错误",
+    dismiss: "关闭",
+  },
+};
+
+function formatTemplate(text, vars = {}) {
+  return String(text || "").replace(/\{(\w+)\}/g, (_, key) =>
+    vars[key] == null ? "" : String(vars[key]),
+  );
+}
+
+function defaultAppSettings() {
+  return {
+    language: "en",
+    cli: "cursor",
+    model: "auto",
+  };
+}
+
+function getModelForCli(cli) {
+  return cli === "codex" ? "GPT-5.4-Mini" : "auto";
+}
 
 /** Must match tmux default pane (server keeps sessions at default size; no resize-window). */
 const TMUX_PANE_COLS = 80;
@@ -159,21 +369,21 @@ function formatEventTarget(event, project) {
   return "";
 }
 
-function formatEventKind(event) {
+function formatEventKind(event, lang = "en") {
   const type = typeof event?.type === "string" ? event.type : "event";
   switch (type) {
     case "user_message":
-      return "用户";
+      return lang === "zh" ? "用户" : "User";
     case "agent_reply":
-      return "回复";
+      return lang === "zh" ? "回复" : "Reply";
     case "done":
-      return "done";
+      return lang === "zh" ? "完成" : "Done";
     case "require_confirmation":
-      return "确认";
+      return lang === "zh" ? "确认" : "Confirm";
     case "status":
-      return "状态";
+      return lang === "zh" ? "状态" : "Status";
     case "terminal_input":
-      return "终端输入";
+      return lang === "zh" ? "终端输入" : "Terminal input";
     default:
       return type;
   }
@@ -573,6 +783,7 @@ const TerminalWorkspace = forwardRef(function TerminalWorkspace(
 function TreeNode({
   node,
   rootId,
+  t,
   expanded,
   onToggle,
   loadedEntry,
@@ -604,7 +815,7 @@ function TreeNode({
       {node.type === "directory" && isOpen ? (
         <div className="tree-children">
           {childState?.loading ? (
-            <div className="tree-loading">Loading…</div>
+            <div className="tree-loading">{t("loading")}</div>
           ) : childState?.error ? (
             <div className="tree-error">{childState.error}</div>
           ) : children.length ? (
@@ -622,7 +833,7 @@ function TreeNode({
               />
             ))
           ) : (
-            <div className="tree-empty">Empty</div>
+            <div className="tree-empty">{t("noFoldersHere")}</div>
           )}
         </div>
       ) : null}
@@ -633,6 +844,7 @@ function TreeNode({
 function DirectoryPickerModal({
   open,
   mode,
+  t,
   roots,
   currentPath,
   listing,
@@ -648,8 +860,8 @@ function DirectoryPickerModal({
       <div className="picker-modal" onClick={(event) => event.stopPropagation()}>
         <div className="picker-header">
           <div>
-            <p className="picker-eyebrow">服务器目录选择</p>
-            <h2>{mode === "link" ? "关联引用目录" : "选择项目文件夹"}</h2>
+            <p className="picker-eyebrow">{t("projectFiles")}</p>
+            <h2>{mode === "link" ? t("linkReferenceDir") : t("selectProjectFolder")}</h2>
           </div>
           <button type="button" className="close-button" onClick={onClose}>
             ×
@@ -669,16 +881,12 @@ function DirectoryPickerModal({
           ))}
         </div>
 
-        <div className="picker-current-path">{currentPath || "Loading…"}</div>
+        <div className="picker-current-path">{currentPath || t("loading")}</div>
 
         <div className="picker-actions">
           {listing?.parentPath ? (
-            <button
-              type="button"
-              className="picker-nav"
-              onClick={() => onOpenPath(listing.parentPath)}
-            >
-              返回上级
+            <button type="button" className="picker-nav" onClick={() => onOpenPath(listing.parentPath)}>
+              {t("back")}
             </button>
           ) : null}
           {currentPath ? (
@@ -689,16 +897,16 @@ function DirectoryPickerModal({
               onClick={() => onSelect(currentPath)}
             >
               {creating
-                ? "创建中…"
+                ? `${t("loading")}...`
                 : mode === "link"
-                  ? "关联这个目录"
-                  : "选择这个文件夹"}
+                  ? t("linkThisDir")
+                  : t("chooseThisFolder")}
             </button>
           ) : null}
         </div>
 
         <div className="picker-list">
-          {loading ? <div className="picker-empty">Loading…</div> : null}
+          {loading ? <div className="picker-empty">{t("loading")}</div> : null}
           {!loading && listing?.entries?.length
             ? listing.entries.map((entry) => (
                 <button
@@ -715,7 +923,7 @@ function DirectoryPickerModal({
               ))
             : null}
           {!loading && !listing?.entries?.length ? (
-            <div className="picker-empty">No folders here.</div>
+            <div className="picker-empty">{t("noFoldersHere")}</div>
           ) : null}
         </div>
       </div>
@@ -724,6 +932,34 @@ function DirectoryPickerModal({
 }
 
 export default function App() {
+  const [lang, setLang] = useState(() => {
+    const raw = window.localStorage.getItem(SETTINGS_STORAGE_KEY);
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw);
+        return parsed?.language === "zh" ? "zh" : "en";
+      } catch {
+        /* ignore */
+      }
+    }
+    const saved = window.localStorage.getItem(LANG_STORAGE_KEY);
+    return saved === "zh" ? "zh" : "en";
+  });
+  const [appSettings, setAppSettings] = useState(() => {
+    const raw = window.localStorage.getItem(SETTINGS_STORAGE_KEY);
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw);
+        return {
+          ...defaultAppSettings(),
+          ...parsed,
+        };
+      } catch {
+        /* ignore */
+      }
+    }
+    return defaultAppSettings();
+  });
   const [projects, setProjects] = useState([]);
   const [connectionState, setConnectionState] = useState("connecting");
   const [toasts, setToasts] = useState([]);
@@ -759,9 +995,29 @@ export default function App() {
   });
   const [composerText, setComposerText] = useState("");
   const [projectHistories, setProjectHistories] = useState({});
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [modelOptions, setModelOptions] = useState([]);
+  const [modelOptionsLoading, setModelOptionsLoading] = useState(false);
+  const [modelOptionsNote, setModelOptionsNote] = useState("");
+  const [providerOptions, setProviderOptions] = useState([]);
+  const [providerOptionsLoading, setProviderOptionsLoading] = useState(false);
+  const modelOptionsCacheRef = useRef(new Map());
+  const modelOptionsRequestRef = useRef("");
+  const providerOptionsLoadedRef = useRef(false);
   const resizeTargetRef = useRef(null);
   const terminalShellRef = useRef(null);
   const bottomPanelRef = useRef(null);
+  const t = (key, vars) => formatTemplate(I18N[lang]?.[key] || I18N.en[key] || key, vars);
+
+  useEffect(() => {
+    const next = {
+      ...defaultAppSettings(),
+      ...appSettings,
+      language: lang,
+    };
+    window.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(next));
+    window.localStorage.setItem(LANG_STORAGE_KEY, lang);
+  }, [lang, appSettings]);
 
   const setStatus = (message, toneHint) => {
     if (!message) return;
@@ -820,11 +1076,96 @@ export default function App() {
   const send = (payload) => {
     const socket = socketRef.current;
     if (!socket || socket.readyState !== WebSocket.OPEN) {
-      setStatus("WebSocket not ready.");
+      setStatus(t("wsNotReady"));
       return;
     }
     socket.send(JSON.stringify(payload));
   };
+
+  const saveSettings = (next) => {
+    const normalized = {
+      ...defaultAppSettings(),
+      ...appSettings,
+      ...(next || {}),
+    };
+    if (normalized.cli !== "cursor" && normalized.cli !== "codex") {
+      normalized.cli = "cursor";
+    }
+    if (!normalized.model) {
+      normalized.model = getModelForCli(normalized.cli);
+    }
+    if (!normalized.language) {
+      normalized.language = "en";
+    }
+    setAppSettings(normalized);
+    setLang(normalized.language === "zh" ? "zh" : "en");
+    send({ type: "update_settings", settings: normalized });
+  };
+
+  const loadModelOptions = useEffectEvent(async (cli) => {
+    const cached = modelOptionsCacheRef.current.get(cli);
+    if (cached) {
+      setModelOptions(cached.models || []);
+      setModelOptionsNote(cached.note || "");
+      setModelOptionsLoading(false);
+      return;
+    }
+    if (modelOptionsRequestRef.current === cli) return;
+    modelOptionsRequestRef.current = cli;
+    setModelOptionsLoading(true);
+    try {
+      const response = await fetch(`/api/settings/model-options?cli=${encodeURIComponent(cli)}`);
+      const json = await response.json();
+      if (!response.ok || !json.ok) {
+        throw new Error(json.error || response.statusText);
+      }
+      setModelOptions(Array.isArray(json.models) ? json.models : []);
+      setModelOptionsNote(json.note || "");
+      modelOptionsCacheRef.current.set(cli, {
+        models: Array.isArray(json.models) ? json.models : [],
+        note: json.note || "",
+      });
+      if (json.defaultModel && !appSettings.model) {
+        setAppSettings((prev) => ({
+          ...prev,
+          model: json.defaultModel,
+        }));
+      }
+    } catch {
+      setModelOptions([]);
+      setModelOptionsNote("");
+    } finally {
+      setModelOptionsLoading(false);
+      modelOptionsRequestRef.current = "";
+    }
+  });
+
+  const loadProviderOptions = useEffectEvent(async () => {
+    if (providerOptionsLoadedRef.current) return;
+    providerOptionsLoadedRef.current = true;
+    setProviderOptionsLoading(true);
+    try {
+      const response = await fetch("/api/providers");
+      const json = await response.json();
+      if (!response.ok || !json.ok) {
+        throw new Error(json.error || response.statusText);
+      }
+      setProviderOptions(Array.isArray(json.providers) ? json.providers : []);
+    } catch {
+      setProviderOptions([
+        { id: "cursor", label: t("cursorCli"), defaultModel: "auto" },
+        { id: "codex", label: t("codexCli"), defaultModel: "GPT-5.4-Mini" },
+      ]);
+    } finally {
+      setProviderOptionsLoading(false);
+    }
+  });
+
+  useEffect(() => {
+    if (!settingsOpen) return;
+    loadProviderOptions();
+    loadModelOptions(appSettings.cli);
+  }, [settingsOpen, appSettings.cli, loadModelOptions, loadProviderOptions]);
 
   // NOTE: The server currently treats `resize` as a no-op (see
   // `resizeTerminal` in server/index.js). We still emit it because:
@@ -977,7 +1318,7 @@ export default function App() {
       setPickerPath(json.currentPath);
       setPickerListing(json);
     } catch (error) {
-      setStatus(error?.message || "Failed to browse directories.");
+      setStatus(error?.message || t("selectProjectFirst"));
     } finally {
       setPickerLoading(false);
     }
@@ -1028,7 +1369,7 @@ export default function App() {
         ...prev,
         [projectId]: {
           loading: false,
-          error: error?.message || "Failed to load file.",
+          error: error?.message || t("loadingFiles"),
           file: null,
         },
       }));
@@ -1064,7 +1405,7 @@ export default function App() {
         ...prev,
         [selectedFile.projectId]: {
           loading: false,
-          error: error?.message || "Failed to refresh file.",
+          error: error?.message || t("loadingFiles"),
           file: prev[selectedFile.projectId]?.file || null,
         },
       }));
@@ -1121,22 +1462,22 @@ export default function App() {
   useEffect(() => {
     const socket = new WebSocket(wsUrl());
     socketRef.current = socket;
-    setStatus("Connecting to AgentMux server…");
+    setStatus(t("wsConnecting"));
     setConnectionState("connecting");
 
     socket.addEventListener("open", () => {
       setConnectionState("open");
-      setStatus("Connected.");
+      setStatus(t("wsConnected"));
     });
 
     socket.addEventListener("close", () => {
       setConnectionState("closed");
-      setStatus("Disconnected from server.");
+      setStatus(t("wsDisconnected"));
     });
 
     socket.addEventListener("error", () => {
       setConnectionState("error");
-      setStatus("WebSocket connection failed.");
+      setStatus(t("wsFailed"));
     });
 
     socket.addEventListener("message", (event) => {
@@ -1150,6 +1491,17 @@ export default function App() {
       switch (message.type) {
         case "snapshot": {
           const nextProjects = sortProjects(message.projects || []);
+          const serverSettings = message.settings || {};
+          const nextSettings = {
+            ...defaultAppSettings(),
+            ...serverSettings,
+          };
+          setAppSettings(nextSettings);
+          if (nextSettings.language === "zh") {
+            setLang("zh");
+          } else {
+            setLang("en");
+          }
           setProjects(nextProjects);
           setActiveTreeRootByProject((prev) => {
             const next = { ...prev };
@@ -1162,24 +1514,32 @@ export default function App() {
             Object.fromEntries(
               nextProjects.map((project) => [
                 project.id,
-                Array.isArray(project.history) ? project.history.slice(-200) : [],
+                filterHistoryEntries(project.history).slice(-200),
               ]),
             ),
           );
           ensureSelection(nextProjects);
           setStatus(
             nextProjects.length
-              ? "Workspace synced."
-              : "No projects yet. Click the folder-plus icon to add one.",
+            ? t("workspaceSynced")
+            : t("noProjects"),
           );
+          break;
+        }
+        case "settings_updated": {
+          const nextSettings = {
+            ...defaultAppSettings(),
+            ...(message.settings || {}),
+          };
+          setAppSettings(nextSettings);
+          setLang(nextSettings.language === "zh" ? "zh" : "en");
+          setStatus(t("settingsSaved"));
           break;
         }
         case "project_created": {
           setProjectHistories((prev) => ({
             ...prev,
-            [message.project.id]: Array.isArray(message.project.history)
-              ? message.project.history.slice(-200)
-              : [],
+            [message.project.id]: filterHistoryEntries(message.project.history).slice(-200),
           }));
           setProjects((prev) => {
             const next = sortProjects(upsertProject(prev, message.project));
@@ -1198,16 +1558,14 @@ export default function App() {
           setActiveTerminalId(null);
           setPickerOpen(false);
           setCreatingProject(false);
-          setStatus(`Created project ${message.project.name}.`);
+          setStatus(t("createdProject", { name: message.project.name }));
           break;
         }
         case "project_existing": {
           const nextProject = message.project;
           setProjectHistories((prev) => ({
             ...prev,
-            [nextProject.id]: Array.isArray(nextProject.history)
-              ? nextProject.history.slice(-200)
-              : [],
+            [nextProject.id]: filterHistoryEntries(nextProject.history).slice(-200),
           }));
           setProjects((prev) => {
             const next = sortProjects(upsertProject(prev, nextProject));
@@ -1226,7 +1584,7 @@ export default function App() {
           setActiveTerminalId(null);
           setPickerOpen(false);
           setCreatingProject(false);
-          setStatus(`Project already exists: ${nextProject.name}.`);
+          setStatus(t("projectExists", { name: nextProject.name }));
           break;
         }
         case "project_deleted": {
@@ -1253,7 +1611,7 @@ export default function App() {
             delete next[message.projectId];
             return next;
           });
-          setStatus("Project removed.");
+          setStatus(t("projectRemoved"));
           break;
         }
         case "terminal_added": {
@@ -1275,7 +1633,7 @@ export default function App() {
           }));
           setActiveProjectId(message.projectId);
           setActiveTerminalId(message.terminal.id);
-          setStatus(`Created ${message.terminal.label}.`);
+          setStatus(t("createdTerminal", { label: message.terminal.label }));
           break;
         }
         case "project_root_added": {
@@ -1291,7 +1649,7 @@ export default function App() {
                 : project,
             ),
           );
-          setStatus(`Linked ${message.root?.label || "reference"}.`);
+          setStatus(t("linkedReference", { label: message.root?.label || t("referenceDir") }));
           break;
         }
         case "project_root_removed": {
@@ -1329,7 +1687,7 @@ export default function App() {
               ? null
               : prev,
           );
-          setStatus("Reference removed.");
+          setStatus(t("referenceRemoved"));
           break;
         }
         case "terminal_renamed": {
@@ -1347,7 +1705,7 @@ export default function App() {
                 : project,
             ),
           );
-          setStatus(`Renamed terminal to ${message.label}.`);
+          setStatus(t("renamedTerminal", { label: message.label }));
           break;
         }
         case "terminal_snapshot": {
@@ -1360,13 +1718,13 @@ export default function App() {
         }
         case "bus_event": {
           const eventData = message.event || {};
-          const projectId = eventData.projectId ? String(eventData.projectId) : "";
+          const projectId = String(eventData.projectId || eventData.groupId || "");
           if (projectId) {
             setProjectHistories((prev) => {
               const current = prev[projectId] || [];
               return {
                 ...prev,
-                [projectId]: [...current, eventData].slice(-200),
+                [projectId]: filterHistoryEntries([...current, eventData]).slice(-200),
               };
             });
           }
@@ -1387,7 +1745,7 @@ export default function App() {
             ensureSelection(next);
             return next;
           });
-          setStatus("Terminal closed.");
+          setStatus(t("terminalClosed"));
           break;
         }
         case "project_tree_changed": {
@@ -1433,7 +1791,7 @@ export default function App() {
         }
         case "error": {
           setCreatingProject(false);
-          const msg = message.message || "Server error";
+          const msg = message.message || t("serverError");
           if (/^Unknown type:/i.test(msg)) break;
           setStatus(msg);
           break;
@@ -1495,13 +1853,13 @@ export default function App() {
       const roots = await loadPickerRoots();
       await openDirectory(roots[0]?.path || "");
     } catch (error) {
-      setStatus(error?.message || "Failed to open directory picker.");
+      setStatus(error?.message || t("selectProjectFirst"));
     }
   };
 
   const openReferencePicker = async () => {
     if (!activeProject) {
-      setStatus("Select a project first.");
+      setStatus(t("selectProjectFirst"));
       return;
     }
     setPickerMode("link");
@@ -1511,13 +1869,13 @@ export default function App() {
       const roots = await loadPickerRoots();
       await openDirectory(roots[0]?.path || "");
     } catch (error) {
-      setStatus(error?.message || "Failed to open directory picker.");
+      setStatus(error?.message || t("selectProjectFirst"));
     }
   };
 
   const selectProjectDirectory = (selectedPath) => {
     if (!socketRef.current || socketRef.current.readyState !== WebSocket.OPEN) {
-      setStatus("WebSocket not connected.");
+      setStatus(t("wsNotReady"));
       return;
     }
     if (creatingProject) return;
@@ -1544,7 +1902,7 @@ export default function App() {
 
   const createTerminal = () => {
     if (!activeProjectId) {
-      setStatus("Select a project first.");
+      setStatus(t("selectProjectFirst"));
       return;
     }
     send({ type: "add_terminal", projectId: activeProjectId });
@@ -1552,7 +1910,7 @@ export default function App() {
 
   const sendComposer = () => {
     if (!activeProjectId || !activeTerminalId) {
-      setStatus("Select a terminal first.");
+      setStatus(t("terminalHint"));
       return;
     }
     const text = composerText.trim();
@@ -1567,6 +1925,11 @@ export default function App() {
         text,
         appendEnter: true,
       },
+    });
+    send({
+      type: "request_snapshot",
+      projectId: activeProjectId,
+      terminalId: activeTerminalId,
     });
     setComposerText("");
   };
@@ -1695,7 +2058,7 @@ export default function App() {
                   type="button"
                   className="sidebar-icon-button sidebar-collapse-button"
                   onClick={() => setSidebarVisible(false)}
-                  title="Hide sidebar"
+                  title={t("hideSidebar")}
                 >
                   <IconSidebar />
                 </button>
@@ -1710,18 +2073,18 @@ export default function App() {
                   <span className="action-icon">
                     <IconTerminal />
                   </span>
-                  <span>新终端</span>
+                  <span>{t("newTerminal")}</span>
                 </button>
               </div>
 
               <div className="sidebar-section">
                 <div className="sidebar-section-header">
-                  <span>项目</span>
+                  <span>{t("projects")}</span>
                   <button
                     type="button"
                     className="sidebar-mini-button"
                     onClick={openPicker}
-                    title="新项目"
+                    title={t("newProject")}
                   >
                     <IconPlus />
                   </button>
@@ -1759,9 +2122,9 @@ export default function App() {
                                 projectId: project.id,
                               })
                             }
-                            title="删除项目"
+                            title={t("deleteProject")}
                           >
-                            删除
+                            {t("deleteProject")}
                           </button>
                         </div>
                         {open ? (
@@ -1791,7 +2154,7 @@ export default function App() {
                                         if (isEditing) return;
                                         beginRename(project.id, terminal);
                                       }}
-                                      title="双击改名"
+                                      title={t("doubleClickRename")}
                                     >
                                       <span
                                         className={`thread-dot ${flashingTerminals[editKey] ? "active" : ""}`}
@@ -1826,10 +2189,14 @@ export default function App() {
                                       <button
                                         type="button"
                                         className="thread-close"
-                                        title="关闭终端"
+                                        title={t("closeTerminal")}
                                         onClick={(event) => {
                                           event.stopPropagation();
-                                          if (!window.confirm(`关闭终端 ${terminal.label}？`)) {
+                                          if (
+                                            !window.confirm(
+                                              t("confirmCloseTerminal", { label: terminal.label }),
+                                            )
+                                          ) {
                                             return;
                                           }
                                           send({
@@ -1854,11 +2221,11 @@ export default function App() {
                 </div>
               </div>
 
-              <button type="button" className="settings-button">
+              <button type="button" className="settings-button" onClick={() => setSettingsOpen(true)}>
                 <span className="settings-icon">
                   <IconSettings />
                 </span>
-                <span>设置</span>
+                <span>{t("settings")}</span>
               </button>
             </aside>
 
@@ -1867,7 +2234,7 @@ export default function App() {
               onMouseDown={startResize("sidebar")}
               role="separator"
               aria-orientation="vertical"
-              aria-label="Resize sidebar"
+              aria-label={t("hideSidebar")}
             />
           </>
         ) : (
@@ -1890,7 +2257,7 @@ export default function App() {
                       type="button"
                       className="sidebar-reopen inline"
                       onClick={() => setSidebarVisible(true)}
-                      title="Show sidebar"
+                      title={t("showSidebar")}
                     >
                       <IconSidebar />
                     </button>
@@ -1898,7 +2265,7 @@ export default function App() {
                   <div className="terminal-title">
                     {activeTerminal
                       ? `${activeTerminal.projectName} / ${activeTerminal.label}`
-                      : "AgentMux"}
+                      : t("appName")}
                   </div>
                 </div>
                 <div className="terminal-shell">
@@ -1907,7 +2274,17 @@ export default function App() {
                       ref={terminalApiRef}
                       activeTerminal={activeTerminal}
                       onInput={(projectId, terminalId, data) =>
-                        send({ type: "input", projectId, terminalId, data })
+                        send({
+                          type: "emit_event",
+                          projectId,
+                          event: {
+                            type: "terminal_input",
+                            from: "browser",
+                            to: terminalId,
+                            text: data,
+                            appendEnter: false,
+                          },
+                        })
                       }
                       onResize={sendResize}
                       onRequestSnapshot={(projectId, terminalId) =>
@@ -1919,8 +2296,8 @@ export default function App() {
                       <div className="terminal-empty-icon">
                         <IconTerminal />
                       </div>
-                      <h2>未激活终端</h2>
-                      <p>先在左侧打开一个项目，然后点击对应终端。</p>
+                      <h2>{t("terminalEmptyTitle")}</h2>
+                      <p>{t("terminalEmptyBody")}</p>
                     </div>
                   )}
                 </div>
@@ -1931,7 +2308,7 @@ export default function App() {
                 onMouseDown={startResize("bottom")}
                 role="separator"
                 aria-orientation="horizontal"
-                aria-label="Resize bottom panel"
+                aria-label={t("resizeBottomPanel")}
               />
 
               <aside
@@ -1948,7 +2325,7 @@ export default function App() {
                       }}
                     >
                       <div className="composer-shell" ref={composerShellRef}>
-                        <div className="composer-history" aria-label="chat history">
+                        <div className="composer-history" aria-label={t("collaborationHistory")}>
                           {activeHistory.length ? (
                             activeHistory.map((event) => {
                               const text = summarizeEvent(event);
@@ -1984,7 +2361,7 @@ export default function App() {
                                         event.type === "require_confirmation"
                                       }
                                     >
-                                      <summary>详情</summary>
+                                      <summary>{t("details")}</summary>
                                       <div className="history-detail-text">
                                         {detail}
                                       </div>
@@ -1994,7 +2371,7 @@ export default function App() {
                               );
                             })
                           ) : (
-                            <div className="history-empty">当前项目还没有协作事件。</div>
+                            <div className="history-empty">{t("currentProjectNoEvents")}</div>
                           )}
                           <div ref={historyEndRef} />
                         </div>
@@ -2003,28 +2380,29 @@ export default function App() {
                           className="composer-input"
                           value={composerText}
                           onChange={(event) => setComposerText(event.target.value)}
-                          placeholder="输入命令或文本，Enter 发送，Shift+Enter 换行"
+                          aria-label={t("inputLabel")}
+                          placeholder={t("inputPlaceholder")}
                           onKeyDown={handleComposerKeyDown}
                         />
                         <div className="composer-toolbar">
                           <button type="button" className="composer-tool active">
-                            完全访问权限
+                            {t("access")}
                           </button>
                           <button type="button" className="composer-tool">
-                            GPT-5.4-Mini
+                            {t("model")}
                           </button>
                           <button type="button" className="composer-tool">
-                            低
+                            {t("effort")}
                           </button>
                           <button type="button" className="composer-tool">
-                            事件中心
+                            {t("eventCenter")}
                           </button>
                           <button
                             type="button"
                             className="composer-send"
                             onClick={sendComposer}
                           >
-                            发送
+                            {t("send")}
                           </button>
                         </div>
                       </div>
@@ -2039,7 +2417,7 @@ export default function App() {
               onMouseDown={startResize("files")}
               role="separator"
               aria-orientation="vertical"
-              aria-label="Resize files panel"
+              aria-label={t("resizeFilesPanel")}
             />
 
             <aside
@@ -2047,7 +2425,7 @@ export default function App() {
               style={{ width: `${filesPanelWidth}px` }}
             >
               <div className="files-header">
-                <span>{activeProject ? activeProject.name : "文件树"}</span>
+                <span>{activeProject ? activeProject.name : t("fileTreeTitle")}</span>
                 <div className="files-header-actions">
                   {activeProject ? (
                     <button
@@ -2055,7 +2433,7 @@ export default function App() {
                       className="files-link-button"
                       onClick={openReferencePicker}
                     >
-                      关联目录
+                      {t("linkDirectory")}
                     </button>
                   ) : null}
                 </div>
@@ -2077,13 +2455,13 @@ export default function App() {
                         }}
                         title={root.path}
                       >
-                        {root.label}
+                        {root.kind === "main" ? t("mainRoot") : root.label}
                       </button>
                       {canRemove ? (
-                          <button
-                            type="button"
-                            className="files-root-remove"
-                            title="移除引用目录"
+                        <button
+                          type="button"
+                          className="files-root-remove"
+                          title={t("removeLinkedRoot")}
                             onClick={() =>
                               send({
                                 type: "remove_project_root",
@@ -2104,9 +2482,9 @@ export default function App() {
               >
                 <div className="files-tree-pane">
                   {!activeProject ? (
-                    <div className="tree-empty">先选择一个项目。</div>
+                    <div className="tree-empty">{t("selectProjectFirst")}</div>
                   ) : treeRoot?.loading ? (
-                    <div className="tree-loading">Loading…</div>
+                    <div className="tree-loading">{t("loading")}</div>
                   ) : treeRoot?.error ? (
                     <div className="tree-error">{treeRoot.error}</div>
                   ) : treeRoot?.entries?.length ? (
@@ -2115,6 +2493,7 @@ export default function App() {
                         key={node.path}
                         node={node}
                         rootId={activeTreeRootId}
+                        t={t}
                         expanded={activeTreeExpanded}
                         onToggle={toggleDirectory}
                         loadedEntry={treeState[activeProject.id]?.[activeTreeRootId]}
@@ -2131,7 +2510,7 @@ export default function App() {
                       />
                     ))
                   ) : (
-                    <div className="tree-empty">No visible files.</div>
+                    <div className="tree-empty">{t("noVisibleFiles")}</div>
                   )}
                 </div>
                 {selectedFile ? (
@@ -2140,13 +2519,13 @@ export default function App() {
                       type="button"
                       className="file-preview-close"
                       onClick={closeFilePreview}
-                      aria-label="Close preview"
-                      title="关闭预览"
+                      aria-label={t("closePreview")}
+                      title={t("closePreview")}
                     >
                       ×
                     </button>
                     {fileContentState[selectedFile.projectId]?.loading ? (
-                      <div className="tree-loading">Loading file…</div>
+                      <div className="tree-loading">{t("loadingFiles")}</div>
                     ) : fileContentState[selectedFile.projectId]?.error ? (
                       <div className="tree-error">
                         {fileContentState[selectedFile.projectId].error}
@@ -2179,7 +2558,7 @@ export default function App() {
                         )}
                       </>
                     ) : (
-                      <div className="tree-empty">No file loaded.</div>
+                      <div className="tree-empty">{t("noFileLoaded")}</div>
                     )}
                   </div>
                 ) : null}
@@ -2197,7 +2576,7 @@ export default function App() {
               type="button"
               className="toast-close"
               onClick={() => dismissToast(toast.id)}
-              aria-label="Dismiss"
+              aria-label={t("dismiss")}
             >
               ×
             </button>
@@ -2208,6 +2587,7 @@ export default function App() {
       <DirectoryPickerModal
         open={pickerOpen}
         mode={pickerMode}
+        t={t}
         roots={pickerRoots}
         currentPath={pickerPath}
         listing={pickerListing}
@@ -2217,6 +2597,150 @@ export default function App() {
         onOpenPath={openDirectory}
         onSelect={selectProjectDirectory}
       />
+
+      {settingsOpen ? (
+        <div className="modal-backdrop" onClick={() => setSettingsOpen(false)}>
+          <div className="settings-shell" onClick={(event) => event.stopPropagation()}>
+            <aside className="settings-sidebar">
+              <button type="button" className="settings-back" onClick={() => setSettingsOpen(false)}>
+                ← {t("backToApp")}
+              </button>
+              <div className="settings-nav">
+                <button type="button" className="settings-nav-item active">
+                  {t("settingsSubtitle")}
+                </button>
+              </div>
+            </aside>
+            <section className="settings-main">
+              <div className="settings-main-header">
+                <h1>{t("settings")}</h1>
+                <button
+                  type="button"
+                  className="close-button"
+                  onClick={() => setSettingsOpen(false)}
+                  aria-label={t("dismiss")}
+                >
+                  ×
+                </button>
+              </div>
+              <p className="settings-overview">{t("settingsOverview")}</p>
+
+              <div className="settings-card">
+                <div className="settings-row">
+                  <div className="settings-copy">
+                    <div className="settings-label">{t("uiLanguage")}</div>
+                    <div className="settings-description">
+                      {t("uiLanguageDesc")}
+                    </div>
+                  </div>
+                  <div className="language-toggle settings-toggle" aria-label={t("uiLanguage")}>
+                    <button
+                      type="button"
+                      className={`language-chip ${lang === "en" ? "active" : ""}`}
+                      onClick={() => saveSettings({ language: "en" })}
+                    >
+                      {t("english")}
+                    </button>
+                    <button
+                      type="button"
+                      className={`language-chip ${lang === "zh" ? "active" : ""}`}
+                      onClick={() => saveSettings({ language: "zh" })}
+                    >
+                      {t("chinese")}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="settings-row">
+                  <div className="settings-copy">
+                    <div className="settings-label">{t("defaultCli")}</div>
+                    <div className="settings-description">
+                      {t("defaultCliDesc")}
+                    </div>
+                  </div>
+                  <div className="settings-select-group" role="group" aria-label={t("defaultCli")}>
+                    {providerOptionsLoading && !providerOptions.length ? (
+                      <div className="settings-note">{t("loading")}</div>
+                    ) : (
+                      (providerOptions.length
+                        ? providerOptions
+                        : [
+                            { id: "cursor", label: t("cursorCli"), defaultModel: "auto" },
+                            { id: "codex", label: t("codexCli"), defaultModel: "GPT-5.4-Mini" },
+                          ]
+                      ).map((provider) => (
+                        <button
+                          key={provider.id}
+                          type="button"
+                          className={`settings-select ${appSettings.cli === provider.id ? "active" : ""}`}
+                          onClick={() => {
+                            saveSettings({
+                              cli: provider.id,
+                              model: provider.defaultModel || getModelForCli(provider.id),
+                            });
+                          }}
+                        >
+                          {provider.label}
+                        </button>
+                      ))
+                    )}
+                  </div>
+                </div>
+
+                <div className="settings-row">
+                  <div className="settings-copy">
+                    <div className="settings-label">{t("defaultModel")}</div>
+                    <div className="settings-description">
+                      {t("defaultModelDesc")}
+                    </div>
+                  </div>
+                  {appSettings.cli === "cursor" ? (
+                    <div className="settings-model-list" role="listbox" aria-label={t("defaultModel")}>
+                      {modelOptionsLoading ? (
+                        <div className="settings-note">{t("loading")}</div>
+                      ) : (
+                        (modelOptions.length ? modelOptions : [{ id: "auto", label: "auto", current: true }]).map((model) => (
+                          <button
+                            key={model.id}
+                            type="button"
+                            className={`settings-select model-item ${appSettings.model === model.id ? "active" : ""}`}
+                            onClick={() => saveSettings({ model: model.id })}
+                          >
+                            <span className="settings-select-name">{model.label}</span>
+                            {model.current ? <span className="settings-select-tag">{lang === "zh" ? "当前" : "Current"}</span> : null}
+                            {model.default ? <span className="settings-select-tag">{lang === "zh" ? "默认" : "Default"}</span> : null}
+                          </button>
+                        ))
+                      )}
+                      {modelOptionsNote ? <div className="settings-note">{modelOptionsNote}</div> : null}
+                    </div>
+                  ) : (
+                    <div className="settings-model-list codex-list" role="listbox" aria-label={t("defaultModel")}>
+                      {modelOptionsLoading ? (
+                        <div className="settings-note">{t("loading")}</div>
+                      ) : (
+                        modelOptions.map((model) => (
+                          <button
+                            key={model.id}
+                            type="button"
+                            className={`settings-select model-item ${appSettings.model === model.id ? "active" : ""}`}
+                            onClick={() => saveSettings({ model: model.id })}
+                          >
+                            <span className="settings-select-name">{model.label}</span>
+                            {model.current ? <span className="settings-select-tag">{lang === "zh" ? "当前" : "Current"}</span> : null}
+                            {model.default ? <span className="settings-select-tag">{lang === "zh" ? "默认" : "Default"}</span> : null}
+                          </button>
+                        ))
+                      )}
+                      {modelOptionsNote ? <div className="settings-note">{modelOptionsNote}</div> : null}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </section>
+          </div>
+        </div>
+      ) : null}
     </>
   );
 }

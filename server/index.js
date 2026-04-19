@@ -12,10 +12,13 @@ const {
   composeAgentPrompt,
   ensureExtraInstructionFile,
   buildPromptVars,
-  getAgentFlagParts,
-  writeAgentBootstrapScript,
   shSingleQuote,
 } = require("./instruction");
+const {
+  getProvider,
+  listModelOptions,
+  listProviders,
+} = require("./providers");
 
 const PORT = Number(process.env.PORT) || 9988;
 const HOST = process.env.HOST || "0.0.0.0";
@@ -23,6 +26,7 @@ const REPO_ROOT = path.join(__dirname, "..");
 const DIST_DIR = path.join(REPO_ROOT, "dist");
 const STATE_DIR = path.join(os.homedir(), ".agentmux");
 const STATE_FILE = path.join(STATE_DIR, "projects.json");
+const SETTINGS_FILE = path.join(STATE_DIR, "settings.json");
 const PROJECTS_DIR = path.join(STATE_DIR, "projects");
 fs.mkdirSync(PROJECTS_DIR, { recursive: true });
 const EVENT_TOKEN =
@@ -43,20 +47,13 @@ function tmux(args, opts = {}) {
 }
 
 
-function resolveAgentBin() {
-  if (process.env.AGENT_BIN && fs.existsSync(process.env.AGENT_BIN)) {
-    return process.env.AGENT_BIN;
-  }
-  try {
-    const p = execFileSync("which", ["agent"], { encoding: "utf8" }).trim();
-    if (p) return p;
-  } catch {
-    /* ignore */
-  }
-  return "agent";
+function defaultSettings() {
+  return {
+    language: "en",
+    cli: "cursor",
+    model: "auto",
+  };
 }
-
-const AGENT_BIN = resolveAgentBin();
 
 /**
  * @param {string} value
@@ -198,6 +195,28 @@ function getProjectRoot(project, rootId = "main") {
   return project.roots.find((root) => root.id === rootId) || project.roots[0] || null;
 }
 
+function sanitizeHistoryEntries(entries) {
+  return (Array.isArray(entries) ? entries : []).filter(
+    (entry) => entry && entry.type !== "terminal_input",
+  );
+}
+
+function getProviderDefaultModel(cli = "cursor") {
+  return getProvider(cli).defaultModel;
+}
+
+function sendRawToTerminal(project, terminalId, data) {
+  const term = project?.terminals.find((item) => item.id === terminalId);
+  if (!term) return false;
+  term.lastReadPos = 0;
+  try {
+    tmux(["send-keys", "-t", `${term.name}:0`, "-l", data]);
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
 class TerminalSession {
   constructor(projectId, index, cwd, logPath) {
     this.projectId = projectId;
@@ -250,12 +269,57 @@ class AgentMuxServer {
     this.projectWatchers = new Map();
     /** @type {Map<string, NodeJS.Timeout>} */
     this.projectRefreshTimers = new Map();
+    this.settings = this.loadSettings();
+  }
+
+  loadSettings() {
+    try {
+      if (fs.existsSync(SETTINGS_FILE)) {
+        const json = JSON.parse(fs.readFileSync(SETTINGS_FILE, "utf8"));
+        return {
+          ...defaultSettings(),
+          ...(json && typeof json === "object" ? json : {}),
+        };
+      }
+    } catch {
+      /* ignore */
+    }
+    return defaultSettings();
+  }
+
+  persistSettings() {
+    try {
+      fs.mkdirSync(STATE_DIR, { recursive: true });
+      const tmp = `${SETTINGS_FILE}.tmp`;
+      fs.writeFileSync(tmp, JSON.stringify(this.settings, null, 2));
+      fs.renameSync(tmp, SETTINGS_FILE);
+    } catch (err) {
+      console.error(`Failed to persist settings: ${err?.message || err}`);
+    }
+  }
+
+  updateSettings(next) {
+    this.settings = {
+      ...defaultSettings(),
+      ...this.settings,
+      ...(next || {}),
+    };
+    if (this.settings.cli !== "codex" && this.settings.cli !== "cursor") {
+      this.settings.cli = "cursor";
+    }
+    if (!this.settings.model) {
+      this.settings.model = getProviderDefaultModel(this.settings.cli);
+    }
+    this.persistSettings();
+    this.broadcast({ type: "settings_updated", settings: this.settings });
+    return this.settings;
   }
 
   persistSnapshot() {
     const data = {
       version: 1,
       updatedAt: new Date().toISOString(),
+      settings: this.settings,
       projects: [...this.projects.values()].map((project) => ({
         id: project.id,
         cwd: project.cwd,
@@ -350,7 +414,7 @@ class AgentMuxServer {
         }
       }
 
-      project.history = Array.isArray(entry.history) ? entry.history.slice(-200) : [];
+      project.history = sanitizeHistoryEntries(entry.history).slice(-200);
       project.terminals.sort((a, b) => a.index - b.index);
       this.projects.set(project.id, project);
       this._ensureProjectWatchers(project);
@@ -458,6 +522,9 @@ class AgentMuxServer {
         "-o",
         `cat >> ${shSingleQuote(term.logPath)}`,
       ]);
+      const cli = this.settings?.cli === "codex" ? "codex" : "cursor";
+      const provider = getProvider(cli);
+      const model = String(this.settings?.model || provider.defaultModel);
       const vars = buildPromptVars({
         groupId: project.id,
         cwdResolved: project.cwd,
@@ -466,16 +533,15 @@ class AgentMuxServer {
       });
       const expanded = composeAgentPrompt(project.baseDir, vars);
       const apiBase = `http://127.0.0.1:${PORT}`;
-      const scriptPath = writeAgentBootstrapScript({
+      const scriptPath = provider.buildBootstrapScript({
         baseDir: project.baseDir,
         index: term.index,
-        agentBin: AGENT_BIN,
         groupId: project.id,
         sessionName: term.name,
         apiBase,
         eventToken: EVENT_TOKEN,
         promptBody: expanded,
-        agentFlagParts: getAgentFlagParts(),
+        model,
       });
       const runLine = `sh ${shSingleQuote(scriptPath)}`;
       tmux(["send-keys", "-t", `${term.name}:0`, "-l", runLine]);
@@ -510,7 +576,7 @@ class AgentMuxServer {
         path: root.path,
         kind: root.kind,
       })),
-      history: project.history.slice(-200),
+      history: sanitizeHistoryEntries(project.history).slice(-200),
       terminals: project.terminals.map((term) => ({
         id: term.id,
         index: term.index,
@@ -526,7 +592,8 @@ class AgentMuxServer {
       projects: [...this.projects.values()].map((project) =>
         this.serializeProject(project),
       ),
-      agentBin: AGENT_BIN,
+      settings: this.settings,
+      agentBin: getProvider(this.settings.cli).resolveBinary(),
       eventToken: EVENT_TOKEN,
     };
   }
@@ -574,18 +641,25 @@ class AgentMuxServer {
       id: randomUUID(),
       ts: Date.now(),
       projectId,
+      groupId: projectId,
     };
     const project = this.projects.get(projectId);
-    if (project) {
-      project.history = [...project.history, enriched].slice(-200);
-      this.schedulePersist();
-    }
-    this.broadcast({ type: "bus_event", event: enriched });
 
     const to = ev.to;
     if (!to || typeof to !== "string") return;
     const target = project?.terminals.find((term) => term.id === to);
     if (!target) return;
+
+    if (ev.type === "terminal_input") {
+      sendRawToTerminal(project, target.id, String(ev.text ?? ""));
+      return;
+    }
+
+    if (project) {
+      project.history = [...project.history, enriched].slice(-200);
+      this.schedulePersist();
+    }
+    this.broadcast({ type: "bus_event", event: enriched });
 
     if (ev.text !== undefined && ev.text !== null) {
       this.sendTextToTerminal(projectId, target.id, String(ev.text), ev.appendEnter !== false);
@@ -641,7 +715,7 @@ class AgentMuxServer {
     ensureExtraInstructionFile(project.baseDir);
 
     for (let index = 0; index < initialCount; index += 1) {
-      project.terminals.push(this._spawnTerminal(project, index));
+      project.terminals.push(this._spawnTerminal(project, index, this.settings));
     }
 
     this.projects.set(project.id, project);
@@ -663,7 +737,7 @@ class AgentMuxServer {
     const index = project.terminals.length
       ? Math.max(...project.terminals.map((term) => term.index)) + 1
       : 0;
-    const term = this._spawnTerminal(project, index);
+    const term = this._spawnTerminal(project, index, this.settings);
     project.terminals.push(term);
     this.broadcast({
       type: "terminal_added",
@@ -729,7 +803,7 @@ class AgentMuxServer {
    * @param {ProjectSession} project
    * @param {number} index
    */
-  _spawnTerminal(project, index) {
+  _spawnTerminal(project, index, settings = this.settings) {
     const logPath = path.join(project.baseDir, `w${index}.log`);
     if (fs.existsSync(logPath)) fs.unlinkSync(logPath);
     fs.writeFileSync(logPath, "");
@@ -753,6 +827,9 @@ class AgentMuxServer {
 
     this._startLogStreaming(project, term);
 
+    const cli = settings?.cli === "codex" ? "codex" : "cursor";
+    const provider = getProvider(cli);
+    const model = String(settings?.model || provider.defaultModel);
     const vars = buildPromptVars({
       groupId: project.id,
       cwdResolved: project.cwd,
@@ -761,16 +838,15 @@ class AgentMuxServer {
     });
     const expanded = composeAgentPrompt(project.baseDir, vars);
     const apiBase = `http://127.0.0.1:${PORT}`;
-    const scriptPath = writeAgentBootstrapScript({
+    const scriptPath = provider.buildBootstrapScript({
       baseDir: project.baseDir,
       index,
-      agentBin: AGENT_BIN,
       groupId: project.id,
       sessionName: term.name,
       apiBase,
       eventToken: EVENT_TOKEN,
       promptBody: expanded,
-      agentFlagParts: getAgentFlagParts(),
+      model,
     });
 
     const runLine = `sh ${shSingleQuote(scriptPath)}`;
@@ -855,17 +931,7 @@ class AgentMuxServer {
    */
   sendInput(projectId, terminalId, data) {
     const project = this.projects.get(projectId);
-    const term = project?.terminals.find((item) => item.id === terminalId);
-    if (!term) return;
-    term.lastReadPos = 0;
-    try {
-      tmux(["send-keys", "-t", `${term.name}:0`, "-l", data]);
-    } catch (e) {
-      this.broadcast({
-        type: "error",
-        message: String(e?.message || e),
-      });
-    }
+    sendRawToTerminal(project, terminalId, data);
   }
 
   /**
@@ -1058,7 +1124,8 @@ app.use(express.json({ limit: "256kb" }));
 app.get("/api/health", (_req, res) => {
   res.json({
     ok: true,
-    agentBin: AGENT_BIN,
+    agentBin: getProvider(mux.settings.cli).resolveBinary(),
+    settings: mux.settings,
     projects: mux.snapshotMessage().projects,
   });
 });
@@ -1076,6 +1143,13 @@ app.get("/api/system/roots", (_req, res) => {
   res.json({
     ok: true,
     roots: DIRECTORY_PICKER_ROOTS,
+  });
+});
+
+app.get("/api/providers", (_req, res) => {
+  res.json({
+    ok: true,
+    providers: listProviders(),
   });
 });
 
@@ -1099,6 +1173,21 @@ app.get("/api/system/directories", (req, res) => {
       error: error?.message || "directory_picker_failed",
     });
   }
+});
+
+app.get("/api/settings/model-options", (req, res) => {
+  const cli = String(req.query.cli || "cursor");
+  const provider = getProvider(cli);
+  res.json({
+    ok: true,
+    cli,
+    supported: true,
+    defaultModel: provider.defaultModel,
+    models: listModelOptions(cli),
+    note: cli === "codex"
+      ? "Codex model list is fixed from the available Codex models shown in the CLI picker."
+      : "",
+  });
 });
 
 app.get("/api/projects/:projectId/tree", (req, res) => {
@@ -1273,6 +1362,10 @@ wss.on("connection", (ws) => {
         }
         break;
       }
+      case "update_settings": {
+        mux.updateSettings(msg.settings && typeof msg.settings === "object" ? msg.settings : {});
+        break;
+      }
       case "add_terminal": {
         mux.addTerminal(String(msg.projectId || ""));
         break;
@@ -1335,11 +1428,24 @@ wss.on("connection", (ws) => {
         break;
       }
       case "input": {
-        mux.sendInput(
-          String(msg.projectId || ""),
-          String(msg.terminalId || ""),
-          String(msg.data ?? ""),
-        );
+        const projectId = String(msg.projectId || "");
+        const terminalId = String(msg.terminalId || "");
+        if (!projectId || !mux.projects.has(projectId)) {
+          ws.send(
+            JSON.stringify({
+              type: "error",
+              message: "unknown_project",
+            }),
+          );
+          break;
+        }
+        mux.emitEvent(projectId, terminalId, {
+          type: "terminal_input",
+          from: terminalId,
+          to: terminalId,
+          text: String(msg.data ?? ""),
+          appendEnter: false,
+        });
         break;
       }
       case "resize": {
@@ -1414,7 +1520,8 @@ server.on("error", (err) => {
 
 server.listen(PORT, HOST, () => {
   console.log(`AgentMux listening on http://${HOST}:${PORT}`);
-  console.log(`Resolved agent binary: ${AGENT_BIN}`);
+  console.log(`Resolved agent binary: ${getProvider(mux.settings.cli).resolveBinary()}`);
+  console.log(`Settings: ${JSON.stringify(mux.settings)}`);
   const instCustom = process.env.AGENTMUX_AGENT_INSTRUCTION_FILE;
   const instDefault = path.join(REPO_ROOT, "config", "agent-instruction.md");
   if (instCustom && fs.existsSync(instCustom)) {
