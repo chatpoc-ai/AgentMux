@@ -18,6 +18,7 @@ const {
   getProvider,
   listModelOptions,
   listProviders,
+  normalizeCli,
 } = require("./providers");
 
 const PORT = Number(process.env.PORT) || 9988;
@@ -201,7 +202,13 @@ function sanitizeHistoryEntries(entries) {
   );
 }
 
-function getProviderDefaultModel(cli = "cursor") {
+/** Explains to the UI why a provider's model list looks the way it does. */
+const MODEL_LIST_NOTES = {
+  codex: "Codex model list is fixed from the available Codex models shown in the CLI picker.",
+  claude: "Claude aliases track the latest release; type a full model id to pin a snapshot.",
+};
+
+function getProviderDefaultModel(cli) {
   return getProvider(cli).defaultModel;
 }
 
@@ -304,9 +311,7 @@ class AgentMuxServer {
       ...this.settings,
       ...(next || {}),
     };
-    if (this.settings.cli !== "codex" && this.settings.cli !== "cursor") {
-      this.settings.cli = "cursor";
-    }
+    this.settings.cli = normalizeCli(this.settings.cli);
     if (!this.settings.model) {
       this.settings.model = getProviderDefaultModel(this.settings.cli);
     }
@@ -522,8 +527,7 @@ class AgentMuxServer {
         "-o",
         `cat >> ${shSingleQuote(term.logPath)}`,
       ]);
-      const cli = this.settings?.cli === "codex" ? "codex" : "cursor";
-      const provider = getProvider(cli);
+      const provider = getProvider(this.settings?.cli);
       const model = String(this.settings?.model || provider.defaultModel);
       const vars = buildPromptVars({
         groupId: project.id,
@@ -542,6 +546,7 @@ class AgentMuxServer {
         eventToken: EVENT_TOKEN,
         promptBody: expanded,
         model,
+        cwd: project.cwd,
       });
       const runLine = `sh ${shSingleQuote(scriptPath)}`;
       tmux(["send-keys", "-t", `${term.name}:0`, "-l", runLine]);
@@ -827,8 +832,7 @@ class AgentMuxServer {
 
     this._startLogStreaming(project, term);
 
-    const cli = settings?.cli === "codex" ? "codex" : "cursor";
-    const provider = getProvider(cli);
+    const provider = getProvider(settings?.cli);
     const model = String(settings?.model || provider.defaultModel);
     const vars = buildPromptVars({
       groupId: project.id,
@@ -847,6 +851,7 @@ class AgentMuxServer {
       eventToken: EVENT_TOKEN,
       promptBody: expanded,
       model,
+      cwd: project.cwd,
     });
 
     const runLine = `sh ${shSingleQuote(scriptPath)}`;
@@ -1176,7 +1181,7 @@ app.get("/api/system/directories", (req, res) => {
 });
 
 app.get("/api/settings/model-options", (req, res) => {
-  const cli = String(req.query.cli || "cursor");
+  const cli = normalizeCli(req.query.cli);
   const provider = getProvider(cli);
   res.json({
     ok: true,
@@ -1184,9 +1189,7 @@ app.get("/api/settings/model-options", (req, res) => {
     supported: true,
     defaultModel: provider.defaultModel,
     models: listModelOptions(cli),
-    note: cli === "codex"
-      ? "Codex model list is fixed from the available Codex models shown in the CLI picker."
-      : "",
+    note: MODEL_LIST_NOTES[cli] || "",
   });
 });
 

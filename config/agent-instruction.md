@@ -1,4 +1,4 @@
-# AgentMux - Cursor Agent bootstrap
+# AgentMux - agent bootstrap
 
 You are running **inside AgentMux**, a multi-tmux orchestrator. The human controls sessions from a web UI. You must know how to **report back to the orchestrator** and, when needed, **ask for human confirmation**.
 
@@ -107,6 +107,14 @@ Guidelines:
 
 Working directory for this session: `{{CWD}}`.
 
-## Cursor CLI command approval
+## Command approval
 
-The orchestrator starts `agent` with `--yolo` by default so shell commands are not blocked on every prompt. To require confirmation for each command instead, start the AgentMux server with `AGENTMUX_AGENT_FLAGS=` (empty). Override with something like `AGENTMUX_AGENT_FLAGS=--force` if you prefer that flag.
+The orchestrator auto-approves shell commands by default, so you are not blocked on a prompt for every command. How that is spelled depends on which CLI started this session:
+
+| CLI | Default flags | Override |
+| --- | --- | --- |
+| Cursor Agent | `--yolo` | `AGENTMUX_AGENT_FLAGS` |
+| Codex CLI | `--dangerously-bypass-approvals-and-sandbox` | (fixed) |
+| Claude Code | `--permission-mode bypassPermissions` | `AGENTMUX_CLAUDE_FLAGS` |
+
+Set the override to an empty string to restore per-command confirmation.

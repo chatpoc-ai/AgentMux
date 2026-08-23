@@ -99,6 +99,7 @@ const I18N = {
     backToApp: "Back to app",
     cursorCli: "Cursor Agent",
     codexCli: "Codex CLI",
+    claudeCli: "Claude Code",
     cursorModel: "auto",
     codexModel: "GPT-5.4-Mini",
     settingsSaved: "Settings saved.",
@@ -190,6 +191,7 @@ const I18N = {
     backToApp: "返回应用",
     cursorCli: "Cursor Agent",
     codexCli: "Codex CLI",
+    claudeCli: "Claude Code",
     cursorModel: "auto",
     codexModel: "GPT-5.4-Mini",
     settingsSaved: "设置已保存。",
@@ -221,8 +223,27 @@ function defaultAppSettings() {
   };
 }
 
+/** Keep in sync with server/providers/index.js. */
+const PROVIDER_IDS = ["cursor", "codex", "claude"];
+
 function getModelForCli(cli) {
-  return cli === "codex" ? "GPT-5.4-Mini" : "auto";
+  if (cli === "codex") return "gpt-5.4-mini";
+  if (cli === "claude") return "sonnet";
+  return "auto";
+}
+
+/**
+ * Only reached when GET /api/providers fails; the live list (with each
+ * provider's real defaultModel) normally comes from the server.
+ *
+ * @param {(key: string) => string} t
+ */
+function fallbackProviderOptions(t) {
+  return PROVIDER_IDS.map((id) => ({
+    id,
+    label: t(`${id}Cli`),
+    defaultModel: getModelForCli(id),
+  }));
 }
 
 /** Must match tmux default pane (server keeps sessions at default size; no resize-window). */
@@ -1088,7 +1109,7 @@ export default function App() {
       ...appSettings,
       ...(next || {}),
     };
-    if (normalized.cli !== "cursor" && normalized.cli !== "codex") {
+    if (!PROVIDER_IDS.includes(normalized.cli)) {
       normalized.cli = "cursor";
     }
     if (!normalized.model) {
@@ -1152,10 +1173,7 @@ export default function App() {
       }
       setProviderOptions(Array.isArray(json.providers) ? json.providers : []);
     } catch {
-      setProviderOptions([
-        { id: "cursor", label: t("cursorCli"), defaultModel: "auto" },
-        { id: "codex", label: t("codexCli"), defaultModel: "GPT-5.4-Mini" },
-      ]);
+      setProviderOptions(fallbackProviderOptions(t));
     } finally {
       setProviderOptionsLoading(false);
     }
@@ -2664,10 +2682,7 @@ export default function App() {
                     ) : (
                       (providerOptions.length
                         ? providerOptions
-                        : [
-                            { id: "cursor", label: t("cursorCli"), defaultModel: "auto" },
-                            { id: "codex", label: t("codexCli"), defaultModel: "GPT-5.4-Mini" },
-                          ]
+                        : fallbackProviderOptions(t)
                       ).map((provider) => (
                         <button
                           key={provider.id}

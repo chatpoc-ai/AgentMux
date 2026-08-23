@@ -1,8 +1,8 @@
 {
-  "name": "agentmux-mac",
+  "name": "agentmux",
   "version": "0.1.0",
   "private": true,
-  "description": "Web UI for multiple tmux sessions running Cursor agent CLI",
+  "description": "Web UI for multiple tmux sessions running Cursor, Codex, or Claude agent CLIs",
   "main": "server/index.js",
   "scripts": {
     "build": "vite build",
