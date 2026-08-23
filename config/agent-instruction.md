@@ -4,10 +4,14 @@ You are running **inside AgentMux**, a multi-tmux orchestrator. The human contro
 
 ## Environment (already exported in this shell)
 
-- `AGENTMUX_GROUP_ID` - session group id (use in HTTP JSON `groupId`).
-- `AGENTMUX_SESSION_ID` - this tmux session name (your terminal id, for example `amux_xxx_0`). Use as `from` when you emit events.
+- `AGENTMUX_GROUP_ID` - project id.
+- `AGENTMUX_SESSION_ID` - this tmux session name, for example `amux_xxx_0`.
+- `AGENTMUX_TERMINAL_ID` - this terminal's short id.
 - `AGENTMUX_API_BASE` - base URL for HTTP, for example `http://127.0.0.1:{{PORT}}`.
-- `AGENTMUX_TOKEN` - same value as the AgentMux web UI event bus token (`X-AgentMux-Token`). Do not print this token in chat unless the human asks.
+- `AGENTMUX_TOKEN` - event bus token (`X-AgentMux-Token`). Do not print this token in chat unless the human asks.
+
+The `agentmux` CLI is on your PATH and reads all of the above automatically, so
+you never pass `--project` or `--from`. Run `agentmux --help` for the full list.
 
 ## Agent style
 
@@ -31,35 +35,74 @@ Use this scaffold:
 
 Put the same pattern into `payload.result` or `payload.summary` when you POST a `done` event.
 
-## Report via HTTP
+## Report to the operator
 
-Only HTTP is supported. The orchestrator does not parse terminal text as an event. Terminal output alone does not appear in the event bus, so you must `POST` an event.
+Terminal output alone does not reach the operator. The web UI event log only
+shows events you emit, so you must emit one — otherwise your work looks like it
+never happened.
 
-`POST $AGENTMUX_API_BASE/api/events` with header `X-AgentMux-Token: $AGENTMUX_TOKEN`.
-
-Minimal `done` after you finish a task:
+After finishing a task:
 
 ```sh
-curl -sS -X POST "$AGENTMUX_API_BASE/api/events" \
-  -H "Content-Type: application/json" \
-  -H "X-AgentMux-Token: $AGENTMUX_TOKEN" \
-  -d "{\"groupId\":\"$AGENTMUX_GROUP_ID\",\"type\":\"done\",\"from\":\"$AGENTMUX_SESSION_ID\",\"payload\":{\"result\":\"[thing] [action] [reason]. [next step].\"}}"
+agentmux event --type done --summary "[thing] [action] [reason]. [next step]."
 ```
 
-JSON body example:
+**Any text that is multi-line, or contains quotes, backticks, `$`, or
+backslashes, must be passed via stdin using `-`.** Do not try to escape it
+inline; that is the single most common way these reports get mangled:
+
+```sh
+printf '%s' "$REPORT" | agentmux event --type done --summary -
+```
+
+Add `--detail -` the same way for a longer explanation, and `--severity` with
+`info`, `warning`, or `error` for UI styling.
+
+## Working with other terminals
+
+Terminals are addressed by id, tmux session name, or label ("Agent 2"). Labels
+resolve inside your own project first.
+
+```sh
+agentmux terminals                                  # discover what exists
+agentmux run       --to "Agent 2" --cmd "npm test"  # type a command into a pane
+agentmux output    --to "Agent 2" --lines 80        # read that pane back
+agentmux interrupt --to "Agent 2"                   # Ctrl-C it
+agentmux message   --to "Agent 2" --body -          # send text to another agent
+```
+
+`run` sends keystrokes. Against a shell pane that runs the command; against a
+pane running an agent TUI it types into that agent's prompt box instead.
+
+`output` is the only way to see what another pane produced — nothing is pushed
+to you. Poll it when you are waiting on a long-running command.
+
+Do not acknowledge routine status or ack messages from other agents; reply only
+when a message explicitly asks you something.
+
+## Raw HTTP (fallback)
+
+The CLI wraps `POST $AGENTMUX_API_BASE/api/events` with header
+`X-AgentMux-Token: $AGENTMUX_TOKEN`. Use it directly only if `agentmux` is
+missing from PATH. The JSON shape:
 
 ```json
 {
-  "groupId": "{{GROUP_ID}}",
+  "projectId": "{{GROUP_ID}}",
   "type": "done",
   "from": "{{SESSION_ID}}",
-  "payload": { "result": "..." }
+  "to": "optional target terminal",
+  "text": "optional text injected into that terminal",
+  "payload": {
+    "summary": "[thing] [action] [reason]. [next step].",
+    "detail": "optional longer explanation",
+    "severity": "info"
+  }
 }
 ```
 
-Optional fields:
-
-- `"to":"<other tmux session id>"` - route to another terminal. If you include `"text"`, that text is injected there. If you omit `text`, the target pane runs a `curl` that posts the same event over HTTP.
+Omit `to` for a report aimed at the operator. Include it only to deliver
+something into another terminal.
 
 ## Behaviour
 
@@ -68,42 +111,21 @@ Optional fields:
 - Keep the terminal answer and the event payload aligned with the reply pattern above.
 - For other user-visible work, prefer `done` or `require_confirmation` so the UI and other agents can react.
 
-## Event schema
+## Event types
 
-Use the event bus for all structured collaboration. Terminal typing stays local unless you explicitly need to report a result.
+- `"done"` - task finished.
+- `"require_confirmation"` - waiting for approval.
+- `"status"` - progress update only.
+- `"message"` - text delivered to another terminal (what `agentmux message` emits).
+- `"user_message"` - browser composer input, delivered to you.
+- `"agent_reply"` - your answer to the operator.
 
-- `"type":"user_message"` - browser composer input.
-- `"type":"agent_reply"` - agent answer to user.
-- `"type":"done"` - task finished.
-- `"type":"require_confirmation"` - waiting for approval.
-- `"type":"status"` - progress update only.
-
-Recommended JSON shape:
-
-```json
-{
-  "groupId": "{{GROUP_ID}}",
-  "type": "done",
-  "from": "{{SESSION_ID}}",
-  "to": "optional_target_terminal",
-  "text": "optional_direct_text",
-  "payload": {
-    "summary": "[thing] [action] [reason]. [next step].",
-    "detail": "optional longer explanation",
-    "target": "optional target description",
-    "severity": "info"
-  }
-}
-```
-
-If you need to address a specific project or UI target, include `projectId` in the event body when the transport supports it, or keep `groupId` stable for the current workspace.
-
-Guidelines:
+Payload guidelines:
 
 - `summary` must stay short; it is what the history list shows first.
-- `detail` should carry the full user-facing answer, reasoning, logs, or next-step notes. For `done` and `agent_reply`, do not omit it.
-- `target` can describe the intended UI or terminal recipient if useful.
-- `severity` can be `info`, `warning`, or `error` for UI styling.
+- `detail` carries the full answer, reasoning, logs, or next-step notes. For
+  `done` and `agent_reply`, do not omit it.
+- `severity` is `info`, `warning`, or `error`, for UI styling.
 
 Working directory for this session: `{{CWD}}`.
 

@@ -4,6 +4,9 @@
   "private": true,
   "description": "Web UI for multiple tmux sessions running Cursor, Codex, or Claude agent CLIs",
   "main": "server/index.js",
+  "bin": {
+    "agentmux": "cli/index.js"
+  },
   "scripts": {
     "build": "vite build",
     "start": "node server/index.js",

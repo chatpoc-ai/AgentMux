@@ -76,6 +76,7 @@ function getFlagParts() {
  * @param {string} o.sessionName
  * @param {string} o.apiBase
  * @param {string} o.eventToken
+ * @param {string} [o.terminalId]
  * @param {string} o.promptBody
  * @param {string} o.model
  * @param {string[]} [o.extraFlags]
@@ -93,6 +94,7 @@ function buildBootstrapScript(o) {
     sessionName: o.sessionName,
     apiBase: o.apiBase,
     eventToken: o.eventToken,
+    terminalId: o.terminalId,
     promptBody: o.promptBody,
     command: `${command} --model ${JSON.stringify(o.model || "auto")}`,
   });

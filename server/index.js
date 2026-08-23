@@ -212,6 +212,43 @@ function getProviderDefaultModel(cli) {
   return getProvider(cli).defaultModel;
 }
 
+/**
+ * Resolve a terminal reference to its owning project.
+ *
+ * Agents only ever learn their own tmux session name (AGENTMUX_SESSION_ID) and
+ * whatever labels the operator typed, so accepting the internal terminal id
+ * alone would make agent-to-agent addressing unusable. Order is most specific
+ * first: terminal id, then tmux session name, then case-insensitive label.
+ *
+ * A `preferProjectId` scopes label lookups, which are the only ambiguous kind
+ * ("Agent 1" exists in every project).
+ *
+ * @param {AgentMuxServer} mux
+ * @param {unknown} ref
+ * @param {string} [preferProjectId]
+ * @returns {{ project: ProjectSession, term: TerminalSession } | null}
+ */
+function resolveTerminalRef(mux, ref, preferProjectId = "") {
+  const needle = String(ref || "").trim();
+  if (!needle) return null;
+
+  const projects = [...mux.projects.values()];
+  const preferred = preferProjectId ? mux.projects.get(preferProjectId) : null;
+  const ordered = preferred ? [preferred, ...projects.filter((p) => p !== preferred)] : projects;
+
+  for (const match of [
+    (term) => term.id === needle,
+    (term) => term.name === needle,
+    (term) => String(term.label || "").toLowerCase() === needle.toLowerCase(),
+  ]) {
+    for (const project of ordered) {
+      const term = project.terminals.find(match);
+      if (term) return { project, term };
+    }
+  }
+  return null;
+}
+
 function sendRawToTerminal(project, terminalId, data) {
   const term = project?.terminals.find((item) => item.id === terminalId);
   if (!term) return false;
@@ -547,6 +584,7 @@ class AgentMuxServer {
         promptBody: expanded,
         model,
         cwd: project.cwd,
+        terminalId: term.id,
       });
       const runLine = `sh ${shSingleQuote(scriptPath)}`;
       tmux(["send-keys", "-t", `${term.name}:0`, "-l", runLine]);
@@ -650,24 +688,27 @@ class AgentMuxServer {
     };
     const project = this.projects.get(projectId);
 
-    const to = ev.to;
-    if (!to || typeof to !== "string") return;
-    const target = project?.terminals.find((term) => term.id === to);
-    if (!target) return;
-
+    // `terminal_input` is raw keystroke passthrough, not a reportable event.
     if (ev.type === "terminal_input") {
-      sendRawToTerminal(project, target.id, String(ev.text ?? ""));
+      const raw = resolveTerminalRef(this, ev.to, projectId);
+      if (raw) sendRawToTerminal(raw.project, raw.term.id, String(ev.text ?? ""));
       return;
     }
 
+    // Record and broadcast BEFORE routing. An event with no `to` is a report
+    // aimed at the operator (the documented `done` shape has no `to`); it must
+    // still reach the event log even though there is nothing to deliver it to.
     if (project) {
       project.history = [...project.history, enriched].slice(-200);
       this.schedulePersist();
     }
     this.broadcast({ type: "bus_event", event: enriched });
 
+    const target = resolveTerminalRef(this, ev.to, projectId);
+    if (!target) return;
+
     if (ev.text !== undefined && ev.text !== null) {
-      this.sendTextToTerminal(projectId, target.id, String(ev.text), ev.appendEnter !== false);
+      this.sendTextToTerminal(projectId, target.term.id, String(ev.text), ev.appendEnter !== false);
       return;
     }
 
@@ -684,7 +725,7 @@ class AgentMuxServer {
       ` -H ${shSingleQuote("Content-Type: application/json")}` +
       ` -H ${shSingleQuote(`X-AgentMux-Token: ${EVENT_TOKEN}`)}` +
       ` -d ${shSingleQuote(json)}`;
-    this.sendTextToTerminal(projectId, target.id, curlLine, true);
+    this.sendTextToTerminal(projectId, target.term.id, curlLine, true);
   }
 
   /**
@@ -852,6 +893,7 @@ class AgentMuxServer {
       promptBody: expanded,
       model,
       cwd: project.cwd,
+      terminalId: term.id,
     });
 
     const runLine = `sh ${shSingleQuote(scriptPath)}`;
@@ -1032,6 +1074,73 @@ class AgentMuxServer {
     }
     if (appendEnter) {
       tmux(["send-keys", "-t", target, "Enter"]);
+    }
+  }
+
+  /**
+   * Run a shell command in a terminal, as if the operator had typed it.
+   *
+   * Only meaningful for `terminal` panes sitting at a shell prompt. Sending
+   * this to a pane running an agent TUI types the text into that agent's
+   * prompt box instead — which is what `sendTextToTerminal` is for.
+   *
+   * @param {string} projectId
+   * @param {string} terminalId
+   * @param {string} command
+   */
+  runInTerminal(projectId, terminalId, command) {
+    const project = this.projects.get(projectId);
+    const term = project?.terminals.find((item) => item.id === terminalId);
+    if (!term) return false;
+    this.sendTextToTerminal(projectId, terminalId, String(command), true);
+    return true;
+  }
+
+  /**
+   * Scrollback as plain text, for an agent to read another pane's output.
+   *
+   * Unlike capturePane (which keeps escapes so xterm can redraw a TUI frame),
+   * this strips them: the consumer is a language model, and raw CSI noise both
+   * wastes its context and garbles the content.
+   *
+   * @param {string} projectId
+   * @param {string} terminalId
+   * @param {number} lines
+   */
+  captureLines(projectId, terminalId, lines) {
+    const project = this.projects.get(projectId);
+    const term = project?.terminals.find((item) => item.id === terminalId);
+    if (!term) return null;
+    const n = Math.min(500, Math.max(1, Number(lines) || 100));
+    try {
+      const raw = execFileSync(
+        "tmux",
+        ["capture-pane", "-t", `${term.name}:0`, "-p", "-S", `-${n}`],
+        { encoding: "utf8" },
+      );
+      return raw
+        .replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, "")
+        .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "")
+        .replace(/\x1b[()][A-Z0-9]/g, "")
+        .replace(/\n+$/, "");
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * @param {string} projectId
+   * @param {string} terminalId
+   */
+  interruptTerminal(projectId, terminalId) {
+    const project = this.projects.get(projectId);
+    const term = project?.terminals.find((item) => item.id === terminalId);
+    if (!term) return false;
+    try {
+      tmux(["send-keys", "-t", `${term.name}:0`, "C-c"]);
+      return true;
+    } catch {
+      return false;
     }
   }
 
@@ -1276,7 +1385,14 @@ app.get("/api/projects/:projectId/file", (req, res) => {
   }
 });
 
-app.post("/api/events", (req, res) => {
+/**
+ * Shared guard for every route an agent (rather than the browser) calls.
+ *
+ * @param {import("express").Request} req
+ * @param {import("express").Response} res
+ * @returns {boolean} true when the caller may proceed
+ */
+function requireEventToken(req, res) {
   const hdr = req.headers["x-agentmux-token"];
   const token =
     (typeof hdr === "string" && hdr) ||
@@ -1284,8 +1400,91 @@ app.post("/api/events", (req, res) => {
     "";
   if (token !== EVENT_TOKEN) {
     res.status(401).json({ ok: false, error: "unauthorized" });
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Resolve a `:ref` path param to a terminal, answering with 404 if unknown.
+ *
+ * @param {import("express").Request} req
+ * @param {import("express").Response} res
+ */
+function requireTerminalRef(req, res) {
+  const found = resolveTerminalRef(
+    mux,
+    req.params.ref,
+    typeof req.query.project === "string" ? req.query.project : "",
+  );
+  if (!found) {
+    res.status(404).json({ ok: false, error: "terminal_not_found" });
+    return null;
+  }
+  return found;
+}
+
+app.get("/api/terminals", (req, res) => {
+  if (!requireEventToken(req, res)) return;
+  const terminals = [];
+  for (const project of mux.projects.values()) {
+    for (const term of project.terminals) {
+      terminals.push({
+        id: term.id,
+        label: term.label,
+        tmuxSession: term.name,
+        projectId: project.id,
+        projectName: project.name,
+        cwd: project.cwd,
+      });
+    }
+  }
+  res.json({ ok: true, terminals });
+});
+
+app.post("/api/terminals/:ref/run", (req, res) => {
+  if (!requireEventToken(req, res)) return;
+  const found = requireTerminalRef(req, res);
+  if (!found) return;
+  const command = req.body?.command != null ? String(req.body.command) : "";
+  if (!command) {
+    res.status(400).json({ ok: false, error: "command_required" });
     return;
   }
+  const ok = mux.runInTerminal(found.project.id, found.term.id, command);
+  if (!ok) {
+    res.status(404).json({ ok: false, error: "terminal_not_found" });
+    return;
+  }
+  res.json({ ok: true, terminalId: found.term.id, projectId: found.project.id });
+});
+
+app.get("/api/terminals/:ref/output", (req, res) => {
+  if (!requireEventToken(req, res)) return;
+  const found = requireTerminalRef(req, res);
+  if (!found) return;
+  const output = mux.captureLines(found.project.id, found.term.id, req.query.lines);
+  if (output == null) {
+    res.status(500).json({ ok: false, error: "capture_failed" });
+    return;
+  }
+  res.json({ ok: true, terminalId: found.term.id, projectId: found.project.id, output });
+});
+
+app.post("/api/terminals/:ref/interrupt", (req, res) => {
+  if (!requireEventToken(req, res)) return;
+  const found = requireTerminalRef(req, res);
+  if (!found) return;
+  const ok = mux.interruptTerminal(found.project.id, found.term.id);
+  if (!ok) {
+    res.status(500).json({ ok: false, error: "interrupt_failed" });
+    return;
+  }
+  res.json({ ok: true, terminalId: found.term.id, projectId: found.project.id });
+});
+
+app.post("/api/events", (req, res) => {
+  if (!requireEventToken(req, res)) return;
   const { projectId, groupId, type, from, to, text, payload, appendEnter } =
     req.body || {};
   const id = String(projectId || groupId || "");
