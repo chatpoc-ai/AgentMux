@@ -45,6 +45,11 @@ const I18N = {
     wsConnected: "Connected.",
     wsDisconnected: "Disconnected from server.",
     wsFailed: "WebSocket connection failed.",
+    conn_connecting: "Connecting to server",
+    conn_open: "Server connected",
+    conn_reconnecting: "Reconnecting to server…",
+    conn_closed: "Server disconnected",
+    conn_error: "Cannot reach server",
     workspaceSynced: "Workspace synced.",
     noProjects: "No projects yet. Click the folder-plus icon to add one.",
     projectRemoved: "Project removed.",
@@ -161,6 +166,11 @@ const I18N = {
     wsNotReady: "WebSocket 未就绪。",
     wsConnecting: "正在连接 AgentMux 服务器…",
     wsConnected: "已连接。",
+    conn_connecting: "正在连接服务器",
+    conn_open: "服务器已连接",
+    conn_reconnecting: "正在重连服务器…",
+    conn_closed: "与服务器断开",
+    conn_error: "无法连接服务器",
     wsDisconnected: "已从服务器断开。",
     wsFailed: "WebSocket 连接失败。",
     workspaceSynced: "工作区已同步。",
@@ -281,6 +291,10 @@ function defaultAppSettings() {
  * behaves better on a phone.
  */
 const MODEL_CHIP_LIMIT = 12;
+
+/** WebSocket reconnect backoff: first retry after this, doubling up to the cap. */
+const RECONNECT_BASE_MS = 800;
+const RECONNECT_MAX_MS = 15000;
 
 /** Picker root id -> dictionary key; unknown ids fall back to the server label. */
 const PICKER_ROOT_KEYS = {
@@ -1197,8 +1211,15 @@ export default function App() {
     window.localStorage.setItem(LANG_STORAGE_KEY, lang);
   }, [lang, appSettings]);
 
-  const setStatus = (message, toneHint) => {
-    if (!message) return;
+  /**
+   * @param {string} message
+   * @param {string} [toneHint]
+   * @param {{ silent?: boolean }} [options] silent keeps a routine message out
+   *   of the toast stack — connecting and syncing happen constantly, and now
+   *   that reconnects are automatic they are not worth interrupting for.
+   */
+  const setStatus = (message, toneHint, options = {}) => {
+    if (!message || options.silent) return;
     const lower = String(message).toLowerCase();
     const tone =
       toneHint ||
@@ -1681,20 +1702,68 @@ export default function App() {
     };
   }, [activeProjectId, activeTerminalId]);
 
+  // The socket is rebuilt on demand rather than once per mount. A dropped
+  // connection used to leave the page inert until a manual refresh, and it
+  // drops for entirely routine reasons: `./run.sh` restarts the server, a
+  // phone locks its screen and the browser suspends the tab, the network
+  // switches between Wi-Fi and cellular, a laptop lid closes. None of those
+  // mean anything is wrong — the tmux sessions carry on regardless.
   useEffect(() => {
+    let disposed = false;
+    let retryTimer = 0;
+    let attempt = 0;
+
+    const scheduleReconnect = () => {
+      if (disposed || retryTimer) return;
+      // Exponential backoff so a server that is genuinely down is not hammered,
+      // capped low enough that coming back from a phone lock still feels quick.
+      const base = Math.min(RECONNECT_MAX_MS, RECONNECT_BASE_MS * 2 ** attempt);
+      attempt += 1;
+      // Jitter keeps several open tabs from retrying in lockstep.
+      const wait = Math.round(base * (0.7 + Math.random() * 0.6));
+      setConnectionState("reconnecting");
+      retryTimer = window.setTimeout(() => {
+        retryTimer = 0;
+        connect();
+      }, wait);
+    };
+
+    /** Skip the backoff — used when something tells us the network is back. */
+    const reconnectNow = () => {
+      if (disposed) return;
+      const current = socketRef.current;
+      if (
+        current &&
+        (current.readyState === WebSocket.OPEN ||
+          current.readyState === WebSocket.CONNECTING)
+      ) {
+        return;
+      }
+      if (retryTimer) {
+        window.clearTimeout(retryTimer);
+        retryTimer = 0;
+      }
+      attempt = 0;
+      connect();
+    };
+
+    function connect() {
+    if (disposed) return;
     const socket = new WebSocket(wsUrl());
     socketRef.current = socket;
-    setStatus(t("wsConnecting"));
+    setStatus(t("wsConnecting"), "info", { silent: true });
     setConnectionState("connecting");
 
     socket.addEventListener("open", () => {
+      attempt = 0;
       setConnectionState("open");
-      setStatus(t("wsConnected"));
+      setStatus(t("wsConnected"), "info", { silent: true });
     });
 
     socket.addEventListener("close", () => {
+      if (disposed) return;
       setConnectionState("closed");
-      setStatus(t("wsDisconnected"));
+      scheduleReconnect();
     });
 
     socket.addEventListener("error", () => {
@@ -2015,9 +2084,26 @@ export default function App() {
       }
     });
 
+    }
+
+    // A suspended tab's socket is often already dead by the time it is shown
+    // again; both of these get the user back without waiting out the backoff.
+    const onVisible = () => {
+      if (document.visibilityState === "visible") reconnectNow();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("online", reconnectNow);
+
+    connect();
+
     return () => {
+      disposed = true;
+      if (retryTimer) window.clearTimeout(retryTimer);
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("online", reconnectNow);
+      const socket = socketRef.current;
       socketRef.current = null;
-      socket.close();
+      socket?.close();
     };
   }, []);
 
@@ -2503,6 +2589,14 @@ export default function App() {
                       ? `${activeTerminal.projectName} / ${terminalLabel(activeTerminal, t)}`
                       : t("appName")}
                   </div>
+                  {/* Only shown when something is wrong: a healthy connection
+                      needs no indicator, and reconnects are automatic. */}
+                  {connectionState !== "open" ? (
+                    <div className={`connection-pill ${connectionState}`}>
+                      <span className="connection-dot" />
+                      <span>{t(`conn_${connectionState}`)}</span>
+                    </div>
+                  ) : null}
                 </div>
                 <div className="terminal-shell">
                   {activeTerminal ? (

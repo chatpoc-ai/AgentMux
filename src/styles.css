@@ -306,6 +306,45 @@ svg {
   color: #3b4250;
 }
 
+.connection-pill {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin-left: 10px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(245, 158, 11, 0.12);
+  color: #92620a;
+  font-size: 0.78rem;
+  font-weight: 650;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.connection-pill.closed,
+.connection-pill.error {
+  background: rgba(239, 68, 68, 0.12);
+  color: #a12b2b;
+}
+
+.connection-pill .connection-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: currentColor;
+  animation: connection-dot-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes connection-dot-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .connection-pill .connection-dot { animation: none; }
+}
+
 .thread-dot {
   width: 8px;
   height: 8px;
