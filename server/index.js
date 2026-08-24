@@ -623,7 +623,6 @@ class AgentMuxServer {
         "pipe-pane",
         "-t",
         `${term.name}:0`,
-        "-o",
         `cat >> ${shSingleQuote(term.logPath)}`,
       ]);
       const provider = getProvider(term.cli);
@@ -657,8 +656,7 @@ class AgentMuxServer {
           "pipe-pane",
           "-t",
           `${term.name}:0`,
-          "-o",
-          `cat >> ${shSingleQuote(term.logPath)}`,
+            `cat >> ${shSingleQuote(term.logPath)}`,
         ]);
       } catch {
         /* ignore */
@@ -966,11 +964,16 @@ class AgentMuxServer {
     // proven stable. DO NOT add -x/-y or later resize-window without
     // verifying cursor-agent still redraws cleanly on SIGWINCH.
     tmux(["new-session", "-d", "-s", term.name, "-c", project.cwd]);
+    // No -o here. `pipe-pane -o` is a *toggle* ("only opens a new pipe if no
+    // previous pipe exists"), so re-running it against a pane that is already
+    // piped tears the pipe down — which is exactly what the restore path did
+    // to every surviving session on server restart, silently cutting that
+    // terminal off from the browser. Without -o the call is idempotent: any
+    // existing pipe is closed and replaced.
     tmux([
       "pipe-pane",
       "-t",
       `${term.name}:0`,
-      "-o",
       `cat >> ${shSingleQuote(logPath)}`,
     ]);
 
@@ -1282,6 +1285,48 @@ class AgentMuxServer {
   }
 
   /**
+   * Make sure a pane is still piping into its log, and repair it if not.
+   *
+   * A pane whose pipe has dropped goes permanently silent in the browser: the
+   * bytes never reach the log the server tails, so the displayed frame freezes
+   * until something forces a capture-pane repaint. That is invisible for an
+   * agent like Claude Code whose TUI repaints constantly, and very visible for
+   * Codex, which only emits on change.
+   *
+   * Whatever the pane printed while the pipe was down was never captured, so
+   * after repairing we push a fresh frame rather than leaving clients stale.
+   *
+   * @param {ProjectSession} project
+   * @param {TerminalSession} term
+   */
+  _ensurePiped(project, term) {
+    let piped;
+    try {
+      piped = execFileSync(
+        "tmux",
+        ["display-message", "-p", "-t", `${term.name}:0`, "#{pane_pipe}"],
+        { encoding: "utf8", timeout: 2000 },
+      ).trim();
+    } catch {
+      return; // session is gone; nothing to repair
+    }
+    if (piped === "1") return;
+    try {
+      tmux(["pipe-pane", "-t", `${term.name}:0`, `cat >> ${shSingleQuote(term.logPath)}`]);
+      term.lastReadPos = fs.statSync(term.logPath).size;
+      console.error(`Re-established output pipe for ${term.name}`);
+      this.broadcast({
+        type: "terminal_snapshot",
+        projectId: project.id,
+        terminalId: term.id,
+        data: this.capturePane(project.id, term.id),
+      });
+    } catch (err) {
+      console.error(`Failed to re-pipe ${term.name}: ${err?.message || err}`);
+    }
+  }
+
+  /**
    * Recompute every terminal's status and announce the ones that changed.
    *
    * Deliberately separate from the output stream: clients need to know which
@@ -1291,8 +1336,13 @@ class AgentMuxServer {
    */
   _pollStatuses() {
     const now = Date.now();
+    // The pipe check costs an extra tmux call, and a dropped pipe is rare, so
+    // it rides along every few status polls rather than every one.
+    this._pipeCheckTick = (this._pipeCheckTick || 0) + 1;
+    const checkPipes = this._pipeCheckTick % 5 === 0;
     for (const project of this.projects.values()) {
       for (const term of project.terminals) {
+        if (checkPipes) this._ensurePiped(project, term);
         const hash = this._frameHash(term);
         if (hash && hash !== term.frameHash) {
           term.frameHash = hash;
