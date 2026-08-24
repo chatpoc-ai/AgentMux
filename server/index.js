@@ -1289,6 +1289,49 @@ app.get("/api/system/directories", (req, res) => {
   }
 });
 
+/**
+ * Create a subdirectory under a browsed path, so a project folder can be made
+ * without leaving the picker.
+ *
+ * The parent is whatever the operator navigated to (browsing is already
+ * unrestricted), but `name` must be a single path segment: without that check
+ * a "folder name" of "../../etc" would silently create a directory somewhere
+ * the operator never opened.
+ */
+app.post("/api/system/directories", (req, res) => {
+  try {
+    const parent = resolveChooserPath(
+      typeof req.body?.path === "string" ? req.body.path : "",
+    );
+    const name = String(req.body?.name ?? "").trim();
+    if (!name || name === "." || name === ".." || /[/\\]/.test(name) || /[\u0000-\u001f]/.test(name)) {
+      res.status(400).json({ ok: false, error: "invalid_folder_name" });
+      return;
+    }
+    if (!fs.statSync(parent).isDirectory()) {
+      res.status(400).json({ ok: false, error: "path_not_directory" });
+      return;
+    }
+    const target = path.join(parent, name);
+    if (path.dirname(target) !== parent) {
+      res.status(400).json({ ok: false, error: "invalid_folder_name" });
+      return;
+    }
+    if (fs.existsSync(target)) {
+      res.status(409).json({ ok: false, error: "folder_exists" });
+      return;
+    }
+    fs.mkdirSync(target);
+    // Answer with the new folder's own listing so the UI can step into it.
+    res.json({ ok: true, ...listDirectoryChoices(target) });
+  } catch (error) {
+    res.status(400).json({
+      ok: false,
+      error: error?.message || "create_directory_failed",
+    });
+  }
+});
+
 app.get("/api/settings/model-options", (req, res) => {
   const cli = normalizeCli(req.query.cli);
   const provider = getProvider(cli);

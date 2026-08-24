@@ -1449,6 +1449,34 @@ body.is-resizing .terminal-bottom-resizer {
   flex-wrap: wrap;
 }
 
+.picker-new-folder {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-top: 10px;
+}
+
+.picker-new-folder-input {
+  flex: 1 1 200px;
+  min-width: 0;
+  border: 1px solid rgba(34, 38, 48, 0.12);
+  border-radius: 12px;
+  padding: 8px 12px;
+  font: inherit;
+  color: #343b47;
+  background: #fff;
+}
+
+.picker-new-folder-input:focus {
+  outline: none;
+  border-color: rgba(34, 38, 48, 0.32);
+}
+
+.picker-new-folder-input:disabled {
+  opacity: 0.6;
+}
+
 .root-chip.active {
   background: rgba(34, 38, 48, 0.1);
   color: #343b47;

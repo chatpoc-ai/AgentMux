@@ -70,6 +70,12 @@ const I18N = {
     linkReferenceDir: "Link reference directory",
     chooseThisFolder: "Choose this folder",
     linkThisDir: "Link this directory",
+    newFolder: "New folder",
+    newFolderPlaceholder: "Folder name",
+    create: "Create",
+    cancel: "Cancel",
+    invalid_folder_name: "That folder name is not allowed.",
+    folder_exists: "A folder with that name already exists.",
     loading: "Loading…",
     loadingFiles: "Loading file…",
     noFoldersHere: "No folders here.",
@@ -162,6 +168,12 @@ const I18N = {
     linkReferenceDir: "关联引用目录",
     chooseThisFolder: "选择这个文件夹",
     linkThisDir: "关联这个目录",
+    newFolder: "新建文件夹",
+    newFolderPlaceholder: "文件夹名称",
+    create: "创建",
+    cancel: "取消",
+    invalid_folder_name: "文件夹名称不合法。",
+    folder_exists: "同名文件夹已存在。",
     loading: "加载中…",
     loadingFiles: "正在加载文件…",
     noFoldersHere: "这里没有文件夹。",
@@ -874,7 +886,35 @@ function DirectoryPickerModal({
   onClose,
   onOpenPath,
   onSelect,
+  onCreateFolder,
 }) {
+  const [newFolderName, setNewFolderName] = useState("");
+  const [namingFolder, setNamingFolder] = useState(false);
+  const [makingFolder, setMakingFolder] = useState(false);
+  const newFolderInputRef = useRef(null);
+
+  useEffect(() => {
+    if (namingFolder) newFolderInputRef.current?.focus();
+  }, [namingFolder]);
+
+  // Drop a half-typed name when the picker closes or navigates elsewhere.
+  useEffect(() => {
+    setNamingFolder(false);
+    setNewFolderName("");
+  }, [open, currentPath]);
+
+  const submitNewFolder = async () => {
+    const name = newFolderName.trim();
+    if (!name || makingFolder) return;
+    setMakingFolder(true);
+    const created = await onCreateFolder(currentPath, name);
+    setMakingFolder(false);
+    // On success the parent navigates into the new folder, which resets this
+    // form via the currentPath effect above; on failure keep the text so the
+    // operator can correct it rather than retype.
+    if (created) setNamingFolder(false);
+  };
+
   if (!open) return null;
   return (
     <div className="modal-backdrop" onClick={onClose}>
@@ -924,7 +964,56 @@ function DirectoryPickerModal({
                   : t("chooseThisFolder")}
             </button>
           ) : null}
+          {currentPath && !namingFolder ? (
+            <button type="button" className="picker-nav" onClick={() => setNamingFolder(true)}>
+              + {t("newFolder")}
+            </button>
+          ) : null}
         </div>
+
+        {namingFolder ? (
+          <div className="picker-new-folder">
+            <input
+              ref={newFolderInputRef}
+              type="text"
+              className="picker-new-folder-input"
+              placeholder={t("newFolderPlaceholder")}
+              value={newFolderName}
+              disabled={makingFolder}
+              onChange={(event) => setNewFolderName(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.nativeEvent.isComposing) return;
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  submitNewFolder();
+                } else if (event.key === "Escape") {
+                  event.preventDefault();
+                  setNamingFolder(false);
+                  setNewFolderName("");
+                }
+              }}
+            />
+            <button
+              type="button"
+              className="picker-submit"
+              disabled={makingFolder || !newFolderName.trim()}
+              onClick={submitNewFolder}
+            >
+              {makingFolder ? `${t("loading")}...` : t("create")}
+            </button>
+            <button
+              type="button"
+              className="picker-nav"
+              disabled={makingFolder}
+              onClick={() => {
+                setNamingFolder(false);
+                setNewFolderName("");
+              }}
+            >
+              {t("cancel")}
+            </button>
+          </div>
+        ) : null}
 
         <div className="picker-list">
           {loading ? <div className="picker-empty">{t("loading")}</div> : null}
@@ -1339,6 +1428,34 @@ export default function App() {
       setStatus(error?.message || t("selectProjectFirst"));
     } finally {
       setPickerLoading(false);
+    }
+  });
+
+  /**
+   * Create a folder under the browsed path and step into it, so the operator
+   * can immediately hit "choose this folder".
+   *
+   * @returns {Promise<boolean>} whether the folder was created
+   */
+  const createFolder = useEffectEvent(async (parentPath, name) => {
+    try {
+      const response = await fetch("/api/system/directories", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: parentPath, name }),
+      });
+      const json = await response.json();
+      if (!response.ok || !json.ok) {
+        throw new Error(json.error || response.statusText);
+      }
+      setPickerPath(json.currentPath);
+      setPickerListing(json);
+      return true;
+    } catch (error) {
+      // Server error codes double as dictionary keys; t() falls back to the
+      // raw code for anything unmapped.
+      setStatus(t(error?.message || "create_directory_failed"), "error");
+      return false;
     }
   });
 
@@ -2614,6 +2731,7 @@ export default function App() {
         onClose={() => setPickerOpen(false)}
         onOpenPath={openDirectory}
         onSelect={selectProjectDirectory}
+        onCreateFolder={createFolder}
       />
 
       {settingsOpen ? (
