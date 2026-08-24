@@ -536,6 +536,11 @@ body.is-resizing .files-resizer {
 }
 
 .settings-select {
+  display: inline-flex;
+  align-items: center;
+  /* The name and the "default"/"current" tag are separate spans; without this
+     they render flush against each other ("GPT-5.6-Sol默认"). */
+  gap: 8px;
   border-radius: 999px;
   padding: 10px 14px;
   background: rgba(34, 38, 48, 0.05);
@@ -591,6 +596,16 @@ body.is-resizing .files-resizer {
   flex: none;
   color: #8b919d;
   font-size: 0.8rem;
+}
+
+.model-select {
+  width: 100%;
+  border: 1px solid rgba(34, 38, 48, 0.12);
+  border-radius: 12px;
+  padding: 10px 12px;
+  font: inherit;
+  color: #343b47;
+  background: #fff;
 }
 
 .settings-note {

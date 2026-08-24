@@ -26,28 +26,54 @@ function parseModelListOutput(output) {
     if (/^(Loading|Available models|Tip:|WARNING:|Continue anyway\?|Error:)/i.test(trimmed)) {
       continue;
     }
-    const match = trimmed.match(/^([a-z0-9._-]+)\s*-\s*(.+?)\s*(?:\((current|default)\))?$/i);
+    const match = trimmed.match(/^([a-z0-9._-]+)\s*-\s*(.+)$/i);
     if (!match) continue;
     const id = match[1];
     if (seen.has(id)) continue;
     seen.add(id);
-    models.push({
-      id,
-      label: match[2].trim(),
-      current: match[3] === "current",
-      default: match[3] === "default",
-    });
+
+    // The marker is a trailing parenthetical that may combine both flags:
+    // "auto - Auto (current, default)". Only strip it when it contains
+    // nothing else — real labels carry parentheses of their own, e.g.
+    // "Claude Fable 5 1M Thinking (NO ZDR)".
+    let label = match[2].trim();
+    let isCurrent = false;
+    let isDefault = false;
+    const tail = label.match(/\(([^)]*)\)$/);
+    if (tail && /^\s*(current|default)(\s*,\s*(current|default))*\s*$/i.test(tail[1])) {
+      isCurrent = /current/i.test(tail[1]);
+      isDefault = /default/i.test(tail[1]);
+      label = label.slice(0, tail.index).trim();
+    }
+
+    models.push({ id, label, current: isCurrent, default: isDefault });
   }
   return models;
 }
 
+const MODELS_TTL_MS = 5 * 60 * 1000;
+/** @type {{ at: number, models: object[] } | null} */
+let modelsCache = null;
+
+/**
+ * Cursor exposes a couple of hundred models and the list only changes on CLI
+ * updates, so cache it: the settings panel and the new-terminal dialog both
+ * hit this on every open, and each miss is a process spawn.
+ */
 function listModels() {
+  if (modelsCache && Date.now() - modelsCache.at < MODELS_TTL_MS) {
+    return modelsCache.models;
+  }
   try {
-    const output = execFileSync("agent", ["--list-models"], {
+    const output = execFileSync(resolveCursorBinary(), ["--list-models"], {
       encoding: "utf8",
+      timeout: 20000,
+      maxBuffer: 4 * 1024 * 1024,
       env: { ...process.env, TERM: "xterm" },
     });
-    return parseModelListOutput(output);
+    const models = parseModelListOutput(output);
+    if (models.length) modelsCache = { at: Date.now(), models };
+    return models;
   } catch (err) {
     console.error(`Failed to list Cursor models: ${err?.message || err}`);
     return [];

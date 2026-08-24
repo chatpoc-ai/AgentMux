@@ -74,7 +74,7 @@ const I18N = {
     evTerminalInput: "Terminal input",
     modelCurrent: "Current",
     modelDefault: "Default",
-    modelNoteCodex: "Codex model list is fixed from the available Codex models shown in the CLI picker.",
+    modelNoteCodex: "Model list comes from the installed Codex CLI's own catalog.",
     modelNoteClaude: "Claude aliases track the latest release; type a full model id to pin a snapshot.",
     linkDirectory: "Link directory",
     removeLinkedRoot: "Remove linked directory",
@@ -189,7 +189,7 @@ const I18N = {
     evTerminalInput: "终端输入",
     modelCurrent: "当前",
     modelDefault: "默认",
-    modelNoteCodex: "Codex 的模型列表是固定的，取自 CLI 选择器里可用的模型。",
+    modelNoteCodex: "模型列表取自本机安装的 Codex CLI 自己的目录。",
     modelNoteClaude: "Claude 别名会自动跟随最新版本；要锁定某个具体快照，直接输入完整的模型 id。",
     linkDirectory: "关联目录",
     removeLinkedRoot: "移除引用目录",
@@ -269,6 +269,13 @@ function defaultAppSettings() {
   };
 }
 
+/**
+ * Above this many models a chip grid stops being usable — Cursor exposes
+ * roughly two hundred — so the picker switches to a native select, which also
+ * behaves better on a phone.
+ */
+const MODEL_CHIP_LIMIT = 12;
+
 /** Picker root id -> dictionary key; unknown ids fall back to the server label. */
 const PICKER_ROOT_KEYS = {
   cwd: "rootCwd",
@@ -280,7 +287,10 @@ const PICKER_ROOT_KEYS = {
 const PROVIDER_IDS = ["cursor", "codex", "claude"];
 
 function getModelForCli(cli) {
-  if (cli === "codex") return "gpt-5.4-mini";
+  // "auto" and "sonnet" are aliases the CLIs resolve themselves, so they stay
+  // valid as the catalogs move. Codex takes concrete version ids, so pinning
+  // one here would rot; "" means "whatever the provider reports as default".
+  if (cli === "codex") return "";
   if (cli === "claude") return "sonnet";
   return "auto";
 }
@@ -2828,19 +2838,37 @@ export default function App() {
             {modelOptionsLoading && !modelOptions.length ? (
               <div className="settings-note">{t("loading")}</div>
             ) : (
-              <div className="settings-select-group" role="group" aria-label={t("pickModel")}>
-                {modelOptions.map((model) => (
-                  <button
-                    key={model.id}
-                    type="button"
-                    className={`settings-select ${newTerminalDialog.model === model.id ? "active" : ""}`}
-                    onClick={() => setNewTerminalDialog((prev) => ({ ...prev, model: model.id }))}
-                  >
-                    <span className="settings-select-name">{model.label}</span>
-                    {model.default ? <span className="settings-select-tag">{t("modelDefault")}</span> : null}
-                  </button>
-                ))}
-              </div>
+              modelOptions.length > MODEL_CHIP_LIMIT ? (
+                <select
+                  className="model-select"
+                  aria-label={t("pickModel")}
+                  value={newTerminalDialog.model || ""}
+                  onChange={(event) =>
+                    setNewTerminalDialog((prev) => ({ ...prev, model: event.target.value }))
+                  }
+                >
+                  {modelOptions.map((model) => (
+                    <option key={model.id} value={model.id}>
+                      {model.label}
+                      {model.default ? ` · ${t("modelDefault")}` : ""}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <div className="settings-select-group" role="group" aria-label={t("pickModel")}>
+                  {modelOptions.map((model) => (
+                    <button
+                      key={model.id}
+                      type="button"
+                      className={`settings-select ${newTerminalDialog.model === model.id ? "active" : ""}`}
+                      onClick={() => setNewTerminalDialog((prev) => ({ ...prev, model: model.id }))}
+                    >
+                      <span className="settings-select-name">{model.label}</span>
+                      {model.default ? <span className="settings-select-tag">{t("modelDefault")}</span> : null}
+                    </button>
+                  ))}
+                </div>
+              )
             )}
             {modelOptionsNoteKey ? <div className="settings-note">{t(modelOptionsNoteKey)}</div> : null}
 
