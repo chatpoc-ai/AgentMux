@@ -64,6 +64,15 @@ const PROJECTS_DIR = path.join(STATE_DIR, "projects");
  */
 const ENTER_DELAY_MS = Math.max(0, Number(process.env.AGENTMUX_ENTER_DELAY_MS) || 120);
 
+/**
+ * Scrollback lines included in a terminal snapshot. Matches xterm's own default
+ * scrollback, so nothing is sent that the client would immediately drop.
+ */
+const SNAPSHOT_SCROLLBACK_LINES = Math.max(
+  0,
+  Number(process.env.AGENTMUX_SNAPSHOT_SCROLLBACK) || 1000,
+);
+
 const STATUS_POLL_MS = 1000;
 const WORKING_GRACE_MS = 3000;
 
@@ -1152,8 +1161,25 @@ class AgentMuxServer {
     try {
       const raw = execFileSync(
         "tmux",
-        ["capture-pane", "-t", `${term.name}:0`, "-p", "-e", "-J"],
-        { encoding: "utf8" },
+        [
+          "capture-pane",
+          "-t",
+          `${term.name}:0`,
+          "-p",
+          "-e",
+          "-J",
+          // Include scrollback, not just the visible screen. The client resets
+          // its terminal before writing a snapshot (replaying old deltas on top
+          // would stack frames), so whatever this omits is gone — a snapshot of
+          // 24 rows left the pane with nothing to scroll back through.
+          //
+          // Safe for both kinds of pane: an alt-screen TUI has no scrollback,
+          // and tmux returns just the visible screen for it, byte for byte the
+          // same as without -S.
+          "-S",
+          `-${SNAPSHOT_SCROLLBACK_LINES}`,
+        ],
+        { encoding: "utf8", maxBuffer: 8 * 1024 * 1024 },
       );
       return raw.replace(/\n+$/, "");
     } catch {
