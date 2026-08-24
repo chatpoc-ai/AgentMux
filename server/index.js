@@ -30,6 +30,20 @@ const STATE_DIR = path.join(os.homedir(), ".agentmux");
 const STATE_FILE = path.join(STATE_DIR, "projects.json");
 const SETTINGS_FILE = path.join(STATE_DIR, "settings.json");
 const PROJECTS_DIR = path.join(STATE_DIR, "projects");
+/**
+ * Cap for a terminal's pipe-pane log before it is recycled.
+ *
+ * The log is a delta-transport buffer, not an archive: bytes are streamed to
+ * clients as they arrive and are never replayed — a client attaching later
+ * gets the current frame from `capture-pane`, and the bytes it already
+ * received live in its own xterm scrollback. Left unbounded it grows without
+ * limit, which an idle Claude Code pane does at roughly 3KB/s (its TUI
+ * redraws continuously even with nothing to do — around 280MB/day).
+ */
+const LOG_MAX_BYTES = Math.max(
+  64 * 1024,
+  Number(process.env.AGENTMUX_LOG_MAX_BYTES) || 2 * 1024 * 1024,
+);
 fs.mkdirSync(PROJECTS_DIR, { recursive: true });
 const EVENT_TOKEN =
   process.env.AGENTMUX_TOKEN || "dev-insecure-change-me";
@@ -993,8 +1007,36 @@ class AgentMuxServer {
       if (buf.length > 0) {
         this.processTailChunk(projectId, terminalId, term, buf);
       }
+
+      this._recycleLog(term);
     } catch {
       /* file may be temporarily unavailable */
+    }
+  }
+
+  /**
+   * Truncate a terminal's log once it passes LOG_MAX_BYTES.
+   *
+   * Only runs when the reader is caught up: anything past `lastReadPos` has
+   * not been streamed to clients yet and must not be discarded. The re-stat
+   * narrows the gap to a single syscall — tmux could still append in that
+   * window, and those bytes would be lost, which is survivable here because
+   * the stream is a TUI redraw that re-renders itself within ~100ms and
+   * `request_snapshot` resyncs the frame from tmux on demand.
+   *
+   * pipe-pane writes with `cat >>` (O_APPEND), so writes resume at offset 0
+   * after the truncation rather than leaving a sparse hole.
+   *
+   * @param {TerminalSession} term
+   */
+  _recycleLog(term) {
+    if (term.lastReadPos < LOG_MAX_BYTES) return;
+    try {
+      if (fs.statSync(term.logPath).size !== term.lastReadPos) return;
+      fs.truncateSync(term.logPath, 0);
+      term.lastReadPos = 0;
+    } catch {
+      /* next poll will try again */
     }
   }
 
