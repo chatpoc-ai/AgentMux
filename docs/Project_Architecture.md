@@ -97,7 +97,6 @@ flowchart TB
 | `src/App.jsx` | The UI: project tree, terminal sidebar, xterm, event log, settings, new-terminal dialog, WebSocket protocol |
 | `src/main.jsx` / `src/styles.css` | Entry point and global styles |
 | `vite.config.mjs` / `index.html` | Build config and Vite entry |
-| `public/` | Legacy static files from the pre-React UI; not loaded by the current page |
 | `run.sh` | Builds the frontend, starts the server in the background, writes `.agentmux.pid` and `agentmux.log` |
 
 **User state (outside the repository):**
