@@ -315,9 +315,29 @@ svg {
   transition: background-color 120ms ease, box-shadow 120ms ease;
 }
 
-.thread-dot.active {
+/* Grey (the base rule above) is idle. */
+.thread-dot.working {
   background: #22c55e;
   box-shadow: 0 0 6px rgba(34, 197, 94, 0.65);
+}
+
+/* Amber, and pulsing, so a pane blocked on the operator stands out from one
+   that is merely busy. */
+.thread-dot.waiting {
+  background: #f59e0b;
+  box-shadow: 0 0 6px rgba(245, 158, 11, 0.7);
+  animation: thread-dot-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes thread-dot-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .thread-dot.waiting {
+    animation: none;
+  }
 }
 
 .thread-label {

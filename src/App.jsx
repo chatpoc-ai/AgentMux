@@ -83,6 +83,9 @@ const I18N = {
     chooseThisFolder: "Choose this folder",
     linkThisDir: "Link this directory",
     newFolder: "New folder",
+    status_idle: "Idle",
+    status_working: "Working",
+    status_waiting: "Waiting for you",
     newTerminalTitle: "New terminal",
     newTerminalDesc: "Pick the agent CLI and model for this terminal.",
     pickProvider: "Agent CLI",
@@ -198,6 +201,9 @@ const I18N = {
     chooseThisFolder: "选择这个文件夹",
     linkThisDir: "关联这个目录",
     newFolder: "新建文件夹",
+    status_idle: "空闲",
+    status_working: "工作中",
+    status_waiting: "等你回应",
     newTerminalTitle: "新建终端",
     newTerminalDesc: "为这个终端选择 CLI 和模型。",
     pickProvider: "CLI",
@@ -1153,8 +1159,8 @@ export default function App() {
   const [pickerListing, setPickerListing] = useState(null);
   const [pickerLoading, setPickerLoading] = useState(false);
   const [creatingProject, setCreatingProject] = useState(false);
-  const [flashingTerminals, setFlashingTerminals] = useState({});
-  const flashTimersRef = useRef(new Map());
+  /** terminalId -> "idle" | "working" | "waiting", pushed by the server. */
+  const [terminalStatuses, setTerminalStatuses] = useState({});
   const [filesPanelWidth, setFilesPanelWidth] = useState(310);
   const [selectedFile, setSelectedFile] = useState(null);
   const [fileContentState, setFileContentState] = useState({});
@@ -1388,6 +1394,17 @@ export default function App() {
       }, 140);
     }, 120);
   };
+
+  // Only the visible pane's bytes are streamed; everything else arrives as the
+  // much smaller terminal_status channel. Switching re-subscribes, and the
+  // terminal component repaints from request_snapshot, so nothing is missed.
+  useEffect(() => {
+    const socket = socketRef.current;
+    if (!socket || socket.readyState !== WebSocket.OPEN) return;
+    socket.send(
+      JSON.stringify({ type: "subscribe_terminal", terminalId: activeTerminalId || null }),
+    );
+  }, [activeTerminalId, connectionState]);
 
   useEffect(() => {
     window.localStorage.setItem(
@@ -1971,27 +1988,19 @@ export default function App() {
           break;
         }
         case "output": {
-          const key = keyFor(message.projectId, message.terminalId);
           terminalApiRef.current?.appendOutput(
             message.projectId,
             message.terminalId,
             message.data || "",
           );
-          const existing = flashTimersRef.current.get(key);
-          if (existing) window.clearTimeout(existing);
-          setFlashingTerminals((prev) =>
-            prev[key] ? prev : { ...prev, [key]: true },
+          break;
+        }
+        case "terminal_status": {
+          setTerminalStatuses((prev) =>
+            prev[message.terminalId] === message.status
+              ? prev
+              : { ...prev, [message.terminalId]: message.status },
           );
-          const timer = window.setTimeout(() => {
-            flashTimersRef.current.delete(key);
-            setFlashingTerminals((prev) => {
-              if (!prev[key]) return prev;
-              const next = { ...prev };
-              delete next[key];
-              return next;
-            });
-          }, 220);
-          flashTimersRef.current.set(key, timer);
           break;
         }
         case "error": {
@@ -2009,10 +2018,6 @@ export default function App() {
     return () => {
       socketRef.current = null;
       socket.close();
-      for (const timer of flashTimersRef.current.values()) {
-        window.clearTimeout(timer);
-      }
-      flashTimersRef.current.clear();
     };
   }, []);
 
@@ -2379,7 +2384,10 @@ export default function App() {
                                       title={t("doubleClickRename")}
                                     >
                                       <span
-                                        className={`thread-dot ${flashingTerminals[editKey] ? "active" : ""}`}
+                                        className={`thread-dot ${terminalStatuses[terminal.id] || terminal.status || "idle"}`}
+                                        title={t(
+                                          `status_${terminalStatuses[terminal.id] || terminal.status || "idle"}`,
+                                        )}
                                       />
                                       {isEditing ? (
                                         <input

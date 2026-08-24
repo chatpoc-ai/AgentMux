@@ -4,7 +4,7 @@ const http = require("http");
 const path = require("path");
 const fs = require("fs");
 const os = require("os");
-const { randomUUID } = require("crypto");
+const { randomUUID, createHash } = require("crypto");
 const { execFileSync } = require("child_process");
 const express = require("express");
 const WebSocket = require("ws");
@@ -40,6 +40,19 @@ const PROJECTS_DIR = path.join(STATE_DIR, "projects");
  * limit, which an idle Claude Code pane does at roughly 3KB/s (its TUI
  * redraws continuously even with nothing to do — around 280MB/day).
  */
+/**
+ * How often each pane's visible frame is hashed to decide whether it is doing
+ * anything, and how long after the last change it still counts as working.
+ *
+ * Byte volume is not usable as an activity signal: an idle Claude Code pane
+ * keeps redrawing its TUI, while an idle Codex pane (--no-alt-screen) emits
+ * nothing at all. The rendered frame, by contrast, is stable exactly when the
+ * agent is stable — measured over 12 idle seconds, the frame hash did not
+ * change once, then changed as soon as the agent was given work.
+ */
+const STATUS_POLL_MS = 1000;
+const WORKING_GRACE_MS = 3000;
+
 const LOG_MAX_BYTES = Math.max(
   64 * 1024,
   Number(process.env.AGENTMUX_LOG_MAX_BYTES) || 2 * 1024 * 1024,
@@ -306,6 +319,13 @@ class TerminalSession {
     // respawn this pane as something else after a restart.
     this.cli = DEFAULT_PROVIDER;
     this.model = "";
+    /** Hash of the last rendered frame, for activity detection. */
+    this.frameHash = "";
+    this.lastFrameChangeAt = 0;
+    /** "idle" | "working" | "waiting" — waiting outranks the other two. */
+    this.status = "idle";
+    /** Set by a require_confirmation event; cleared when the agent moves on. */
+    this.attention = false;
     this.lastReadPos = 0;
     /** @type {NodeJS.Timeout[]} */
     this.streamTimers = [];
@@ -669,6 +689,7 @@ class AgentMuxServer {
         tmuxSession: term.name,
         cli: term.cli,
         model: term.model,
+        status: term.status,
       })),
     };
   }
@@ -739,6 +760,9 @@ class AgentMuxServer {
       return;
     }
 
+    const reporter = resolveTerminalRef(this, ev.from, projectId);
+    if (reporter) this.applyEventToStatus(reporter.term, ev.type);
+
     // Record and broadcast BEFORE routing. An event with no `to` is a report
     // aimed at the operator (the documented `done` shape has no `to`); it must
     // still reach the event log even though there is nothing to deliver it to.
@@ -779,12 +803,34 @@ class AgentMuxServer {
    * @param {Buffer} chunk
    */
   processTailChunk(projectId, sourceTerminalId, term, chunk) {
-    this.broadcast({
-      type: "output",
-      projectId,
-      terminalId: sourceTerminalId,
-      data: chunk.toString("utf8"),
-    });
+    this.sendOutput(projectId, sourceTerminalId, chunk.toString("utf8"));
+  }
+
+  /**
+   * Deliver pane bytes only to clients actually displaying that pane.
+   *
+   * Terminal output is the bulk of this server's traffic — a working Claude
+   * pane emits several KB/s of redraws — and broadcasting every pane to every
+   * client multiplies that by the number of panes for no benefit: the browser
+   * repaints a pane from `capture-pane` when it is switched to, so bytes for
+   * hidden panes are discarded on arrival. Activity still reaches everyone,
+   * via the much smaller terminal_status channel.
+   *
+   * A client that never subscribed (an older build) keeps receiving
+   * everything.
+   *
+   * @param {string} projectId
+   * @param {string} terminalId
+   * @param {string} data
+   */
+  sendOutput(projectId, terminalId, data) {
+    const raw = JSON.stringify({ type: "output", projectId, terminalId, data });
+    for (const ws of this.clients) {
+      if (ws.readyState !== WebSocket.OPEN) continue;
+      const sub = ws.agentmuxSubscription;
+      if (sub !== undefined && sub !== null && sub !== terminalId) continue;
+      ws.send(raw);
+    }
   }
 
   /**
@@ -1216,6 +1262,83 @@ class AgentMuxServer {
   }
 
   /**
+   * Hash of a pane's visible frame, or "" if the session is gone.
+   *
+   * Plain `-p` on purpose: the escape-preserving form used for snapshots
+   * carries styling that can differ between otherwise identical frames.
+   *
+   * @param {TerminalSession} term
+   */
+  _frameHash(term) {
+    try {
+      const raw = execFileSync("tmux", ["capture-pane", "-t", `${term.name}:0`, "-p"], {
+        encoding: "utf8",
+        timeout: 2000,
+      });
+      return createHash("sha1").update(raw).digest("hex");
+    } catch {
+      return "";
+    }
+  }
+
+  /**
+   * Recompute every terminal's status and announce the ones that changed.
+   *
+   * Deliberately separate from the output stream: clients need to know which
+   * panes are working even while they are only subscribed to one pane's bytes.
+   * Only transitions are broadcast, so this costs a few dozen bytes when
+   * something actually happens rather than a constant trickle.
+   */
+  _pollStatuses() {
+    const now = Date.now();
+    for (const project of this.projects.values()) {
+      for (const term of project.terminals) {
+        const hash = this._frameHash(term);
+        if (hash && hash !== term.frameHash) {
+          term.frameHash = hash;
+          term.lastFrameChangeAt = now;
+        }
+        const next = term.attention
+          ? "waiting"
+          : now - term.lastFrameChangeAt < WORKING_GRACE_MS
+            ? "working"
+            : "idle";
+        if (next === term.status) continue;
+        term.status = next;
+        this.broadcast({
+          type: "terminal_status",
+          projectId: project.id,
+          terminalId: term.id,
+          status: next,
+        });
+      }
+    }
+  }
+
+  /**
+   * Flag or clear a terminal's "needs the operator" state from a reported event.
+   *
+   * @param {TerminalSession} term
+   * @param {string} type
+   */
+  applyEventToStatus(term, type) {
+    if (!term) return;
+    if (type === "require_confirmation") term.attention = true;
+    else if (type === "done" || type === "agent_reply" || type === "status") term.attention = false;
+    else return;
+    // Let the next poll decide working vs idle; only "waiting" is immediate.
+    if (term.attention && term.status !== "waiting") {
+      term.status = "waiting";
+      this.broadcast({
+        type: "terminal_status",
+        projectId: term.projectId,
+        terminalId: term.id,
+        status: "waiting",
+      });
+    }
+  }
+
+  /**
    * @param {string} projectId
    * @param {string} terminalId
    */
@@ -1309,6 +1432,8 @@ class AgentMuxServer {
 
 const mux = new AgentMuxServer();
 mux.restoreFromDisk();
+mux.statusTimer = setInterval(() => mux._pollStatuses(), STATUS_POLL_MS);
+mux.statusTimer.unref?.();
 
 function shutdown() {
   mux.persistSnapshot();
@@ -1696,6 +1821,12 @@ wss.on("connection", (ws) => {
       }
       case "update_settings": {
         mux.updateSettings(msg.settings && typeof msg.settings === "object" ? msg.settings : {});
+        break;
+      }
+      case "subscribe_terminal": {
+        // null/absent terminalId means "nothing visible"; the client re-subscribes
+        // on every switch and repaints from request_snapshot, so no bytes are lost.
+        ws.agentmuxSubscription = msg.terminalId ? String(msg.terminalId) : null;
         break;
       }
       case "add_terminal": {
