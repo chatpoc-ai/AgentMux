@@ -334,6 +334,10 @@ function fallbackProviderOptions(t) {
 }
 
 /** Must match tmux default pane (server keeps sessions at default size; no resize-window). */
+/** PageUp / PageDown as xterm would encode them. */
+const PAGE_UP_SEQUENCE = `${String.fromCharCode(27)}[5~`;
+const PAGE_DOWN_SEQUENCE = `${String.fromCharCode(27)}[6~`;
+
 const TMUX_PANE_COLS = 80;
 const TMUX_PANE_ROWS = 24;
 
@@ -791,10 +795,37 @@ const TerminalWorkspace = forwardRef(function TerminalWorkspace(
       /* intentionally no fit()+resize here — see markReady comment */
     });
     resizeObserver.observe(host);
+
+    /**
+     * Send the wheel to the pane when xterm has nothing of its own to scroll.
+     *
+     * An alt-screen TUI (Claude Code) draws to a buffer with no scrollback, so
+     * tmux has no history to hand over and xterm's viewport never grows — the
+     * wheel does nothing. Those applications scroll their own transcript on
+     * PageUp/PageDown instead, which is what they tell you to use under tmux.
+     *
+     * Panes in the normal buffer (Codex with --no-alt-screen) do build xterm
+     * scrollback, so this steps aside and lets xterm scroll natively.
+     */
+    const onWheel = (event) => {
+      const viewport = host.querySelector(".xterm-viewport");
+      if (viewport && viewport.scrollHeight > viewport.clientHeight) return;
+      const active = activeTerminalRef.current;
+      if (!active || !event.deltaY) return;
+      event.preventDefault();
+      onInputRef.current?.(
+        active.projectId,
+        active.id,
+        event.deltaY < 0 ? PAGE_UP_SEQUENCE : PAGE_DOWN_SEQUENCE,
+      );
+    };
+    host.addEventListener("wheel", onWheel, { passive: false });
+
     tryOpen();
 
     return () => {
       disposed = true;
+      host.removeEventListener("wheel", onWheel);
       resizeObserver.disconnect();
       try {
         term.dispose();
