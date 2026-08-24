@@ -847,7 +847,6 @@ body.is-resizing .terminal-bottom-resizer {
   color: #717784;
 }
 
-.composer-tool,
 .composer-send {
   display: inline-flex;
   align-items: center;
@@ -858,11 +857,6 @@ body.is-resizing .terminal-bottom-resizer {
   color: #6f7581;
   font-size: 0.92rem;
   font-weight: 600;
-}
-
-.composer-tool.active {
-  color: #ff6a00;
-  background: rgba(255, 106, 0, 0.1);
 }
 
 .composer-send {

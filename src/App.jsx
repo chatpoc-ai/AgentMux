@@ -36,10 +36,6 @@ const I18N = {
     sendToCurrentTerminal: "Send to current terminal",
     send: "Send",
     clear: "Clear",
-    access: "Full access",
-    model: "GPT-5.4-Mini",
-    effort: "Low",
-    eventCenter: "Event center",
     terminalEmptyTitle: "No active terminal",
     terminalEmptyBody: "Open a project on the left, then click a terminal.",
     projectHint: "Select a project first.",
@@ -150,10 +146,6 @@ const I18N = {
     sendToCurrentTerminal: "发送到当前终端",
     send: "发送",
     clear: "清空",
-    access: "完全访问权限",
-    model: "GPT-5.4-Mini",
-    effort: "低",
-    eventCenter: "事件中心",
     terminalEmptyTitle: "未激活终端",
     terminalEmptyBody: "先在左侧打开一个项目，然后点击对应终端。",
     projectHint: "请先选择一个项目。",
@@ -2569,18 +2561,6 @@ export default function App() {
                           onKeyDown={handleComposerKeyDown}
                         />
                         <div className="composer-toolbar">
-                          <button type="button" className="composer-tool active">
-                            {t("access")}
-                          </button>
-                          <button type="button" className="composer-tool">
-                            {t("model")}
-                          </button>
-                          <button type="button" className="composer-tool">
-                            {t("effort")}
-                          </button>
-                          <button type="button" className="composer-tool">
-                            {t("eventCenter")}
-                          </button>
                           <button
                             type="button"
                             className="composer-send"
