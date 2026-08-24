@@ -81,7 +81,6 @@ flowchart TB
 | `src/App.jsx` | 主 UI：项目树、终端侧栏、xterm、事件日志、设置、新建终端对话框、WebSocket 协议处理 |
 | `src/main.jsx` / `src/styles.css` | 入口与全局样式 |
 | `vite.config.mjs` / `index.html` | 构建配置与 Vite 入口 |
-| `public/` | 历史/备用静态文件（当前主流程以 Vite `src/` + `dist/` 为主） |
 | `run.sh` | 构建前端、后台启动 `node server/index.js`，写 `.agentmux.pid` 与 `agentmux.log` |
 
 **用户态持久数据（仓库外）：**

@@ -12,8 +12,9 @@
 > 侧栏与终端区的实际布局在那里，样式在 [`src/styles.css`](../src/styles.css)。
 > `src/App.jsx` 对本文提到的 DOM id **没有任何引用**。
 >
-> `public/` 目录目前是遗留文件：Vite 会把它复制进 `dist/`，但页面入口是
-> React 构建产物，那几个文件不会被加载。
+> `public/` 目录**已被删除**。它此前只是被 Vite 复制进 `dist/` 的死文件，
+> 页面入口是 React 构建产物，从不加载它们。因此本文提到的那些文件在仓库中
+> 已不存在。
 >
 > 保留本文是因为 §8 记录了迁移到 React 时的对照与注意事项，仍有参考价值。
 > 若只想了解当前架构，请读 [`Project_Architecture.zh-CN.md`](./Project_Architecture.zh-CN.md)。
