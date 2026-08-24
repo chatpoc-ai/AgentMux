@@ -839,6 +839,17 @@ body.is-resizing .terminal-bottom-resizer {
   font-weight: 600;
 }
 
+.thread-provider {
+  display: block;
+  margin-top: 2px;
+  font-size: 0.72rem;
+  font-weight: 500;
+  color: #9aa0ab;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .composer-toolbar {
   display: flex;
   align-items: center;

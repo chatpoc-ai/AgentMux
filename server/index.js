@@ -19,6 +19,7 @@ const {
   listModelOptions,
   listProviders,
   normalizeCli,
+  DEFAULT_PROVIDER,
 } = require("./providers");
 
 const PORT = Number(process.env.PORT) || 9988;
@@ -285,6 +286,12 @@ class TerminalSession {
     this.id = randomUUID().replace(/-/g, "").slice(0, 8);
     this.name = safeSessionName(projectId, index, this.id);
     this.label = `Agent ${index + 1}`;
+    // Which agent CLI this pane runs. Stored per terminal, not read from the
+    // global default at use time: the operator picks a provider when creating
+    // the terminal, and a later change to the default must not silently
+    // respawn this pane as something else after a restart.
+    this.cli = DEFAULT_PROVIDER;
+    this.model = "";
     this.lastReadPos = 0;
     /** @type {NodeJS.Timeout[]} */
     this.streamTimers = [];
@@ -394,6 +401,8 @@ class AgentMuxServer {
           label: term.label,
           name: term.name,
           logPath: term.logPath,
+          cli: term.cli,
+          model: term.model,
         })),
       })),
     };
@@ -460,6 +469,10 @@ class AgentMuxServer {
         term.id = termEntry.id || term.id;
         term.name = termEntry.name || term.name;
         term.label = termEntry.label || term.label;
+        // State written before terminals carried a provider falls back to the
+        // global default, which is what those panes were started with anyway.
+        term.cli = normalizeCli(termEntry.cli || this.settings.cli);
+        term.model = String(termEntry.model || this.settings.model || "");
 
         try {
           this._restoreTerminal(project, term);
@@ -579,8 +592,8 @@ class AgentMuxServer {
         "-o",
         `cat >> ${shSingleQuote(term.logPath)}`,
       ]);
-      const provider = getProvider(this.settings?.cli);
-      const model = String(this.settings?.model || provider.defaultModel);
+      const provider = getProvider(term.cli);
+      const model = String(term.model || provider.defaultModel);
       const vars = buildPromptVars({
         groupId: project.id,
         cwdResolved: project.cwd,
@@ -640,6 +653,8 @@ class AgentMuxServer {
         index: term.index,
         label: term.label,
         tmuxSession: term.name,
+        cli: term.cli,
+        model: term.model,
       })),
     };
   }
@@ -792,13 +807,18 @@ class AgentMuxServer {
   /**
    * @param {string} projectId
    */
-  addTerminal(projectId) {
+  /**
+   * @param {string} projectId
+   * @param {{ cli?: string, model?: string }} [choice] provider for this pane;
+   *   defaults to the global setting
+   */
+  addTerminal(projectId, choice) {
     const project = this.projects.get(projectId);
     if (!project) return null;
     const index = project.terminals.length
       ? Math.max(...project.terminals.map((term) => term.index)) + 1
       : 0;
-    const term = this._spawnTerminal(project, index, this.settings);
+    const term = this._spawnTerminal(project, index, choice || this.settings);
     project.terminals.push(term);
     this.broadcast({
       type: "terminal_added",
@@ -808,6 +828,8 @@ class AgentMuxServer {
         index: term.index,
         label: term.label,
         tmuxSession: term.name,
+        cli: term.cli,
+        model: term.model,
       },
     });
     this.schedulePersist();
@@ -864,7 +886,13 @@ class AgentMuxServer {
    * @param {ProjectSession} project
    * @param {number} index
    */
-  _spawnTerminal(project, index, settings = this.settings) {
+  /**
+   * @param {ProjectSession} project
+   * @param {number} index
+   * @param {{ cli?: string, model?: string }} [choice] provider for this pane;
+   *   defaults to the global setting
+   */
+  _spawnTerminal(project, index, choice = this.settings) {
     const logPath = path.join(project.baseDir, `w${index}.log`);
     if (fs.existsSync(logPath)) fs.unlinkSync(logPath);
     fs.writeFileSync(logPath, "");
@@ -888,8 +916,10 @@ class AgentMuxServer {
 
     this._startLogStreaming(project, term);
 
-    const provider = getProvider(settings?.cli);
-    const model = String(settings?.model || provider.defaultModel);
+    const provider = getProvider(choice?.cli);
+    const model = String(choice?.model || provider.defaultModel);
+    term.cli = provider.id;
+    term.model = model;
     const vars = buildPromptVars({
       groupId: project.id,
       cwdResolved: project.cwd,
@@ -1627,7 +1657,12 @@ wss.on("connection", (ws) => {
         break;
       }
       case "add_terminal": {
-        mux.addTerminal(String(msg.projectId || ""));
+        // Absent cli/model means "use the global default", which is what the
+        // older clients that never sent them expect.
+        const choice = msg.cli
+          ? { cli: normalizeCli(msg.cli), model: msg.model ? String(msg.model) : "" }
+          : undefined;
+        mux.addTerminal(String(msg.projectId || ""), choice);
         break;
       }
       case "add_project_root": {

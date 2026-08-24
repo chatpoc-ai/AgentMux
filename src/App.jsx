@@ -83,6 +83,11 @@ const I18N = {
     chooseThisFolder: "Choose this folder",
     linkThisDir: "Link this directory",
     newFolder: "New folder",
+    newTerminalTitle: "New terminal",
+    newTerminalDesc: "Pick the agent CLI and model for this terminal.",
+    pickProvider: "Agent CLI",
+    pickModel: "Model",
+    createTerminal: "Create terminal",
     newFolderPlaceholder: "Folder name",
     create: "Create",
     cancel: "Cancel",
@@ -193,6 +198,11 @@ const I18N = {
     chooseThisFolder: "选择这个文件夹",
     linkThisDir: "关联这个目录",
     newFolder: "新建文件夹",
+    newTerminalTitle: "新建终端",
+    newTerminalDesc: "为这个终端选择 CLI 和模型。",
+    pickProvider: "CLI",
+    pickModel: "模型",
+    createTerminal: "创建终端",
     newFolderPlaceholder: "文件夹名称",
     create: "创建",
     cancel: "取消",
@@ -1126,6 +1136,7 @@ export default function App() {
   const [editingLabel, setEditingLabel] = useState("");
   const [sidebarWidth, setSidebarWidth] = useState(320);
   const [sidebarVisible, setSidebarVisible] = useState(true);
+  const [newTerminalDialog, setNewTerminalDialog] = useState(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerRoots, setPickerRoots] = useState([]);
   const [pickerPath, setPickerPath] = useState("");
@@ -1314,6 +1325,14 @@ export default function App() {
     loadProviderOptions();
     loadModelOptions(appSettings.cli);
   }, [settingsOpen, appSettings.cli, loadModelOptions, loadProviderOptions]);
+
+  // The new-terminal dialog needs the same lists, keyed off its own selection
+  // rather than the global default.
+  useEffect(() => {
+    if (!newTerminalDialog) return;
+    loadProviderOptions();
+    loadModelOptions(newTerminalDialog.cli);
+  }, [newTerminalDialog, loadModelOptions, loadProviderOptions]);
 
   // NOTE: The server currently treats `resize` as a no-op (see
   // `resizeTerminal` in server/index.js). We still emit it because:
@@ -2081,7 +2100,24 @@ export default function App() {
       setStatus(t("selectProjectFirst"));
       return;
     }
-    send({ type: "add_terminal", projectId: activeProjectId });
+    // Seed from the global default, which is the common case; the whole point
+    // of the dialog is that a project can mix providers per terminal.
+    setNewTerminalDialog({
+      projectId: activeProjectId,
+      cli: appSettings.cli,
+      model: appSettings.model || "",
+    });
+  };
+
+  const confirmNewTerminal = () => {
+    if (!newTerminalDialog) return;
+    send({
+      type: "add_terminal",
+      projectId: newTerminalDialog.projectId,
+      cli: newTerminalDialog.cli,
+      model: newTerminalDialog.model,
+    });
+    setNewTerminalDialog(null);
   };
 
   const sendComposer = () => {
@@ -2358,6 +2394,12 @@ export default function App() {
                                       ) : (
                                         <span className="thread-label">
                                           {terminalLabel(terminal, t)}
+                                          {terminal.cli ? (
+                                            <span className="thread-provider">
+                                              {t(`${terminal.cli}Cli`)}
+                                              {terminal.model ? ` · ${terminal.model}` : ""}
+                                            </span>
+                                          ) : null}
                                         </span>
                                       )}
                                     </div>
@@ -2747,6 +2789,72 @@ export default function App() {
           </div>
         ))}
       </div>
+
+      {newTerminalDialog ? (
+        <div className="modal-backdrop" onClick={() => setNewTerminalDialog(null)}>
+          <div className="picker-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="picker-header">
+              <div>
+                <p className="picker-eyebrow">{t("newTerminalTitle")}</p>
+                <h2>{t("newTerminalDesc")}</h2>
+              </div>
+              <button type="button" className="close-button" onClick={() => setNewTerminalDialog(null)}>
+                ×
+              </button>
+            </div>
+
+            <div className="settings-label">{t("pickProvider")}</div>
+            <div className="settings-select-group" role="group" aria-label={t("pickProvider")}>
+              {(providerOptions.length ? providerOptions : fallbackProviderOptions(t)).map((provider) => (
+                <button
+                  key={provider.id}
+                  type="button"
+                  className={`settings-select ${newTerminalDialog.cli === provider.id ? "active" : ""}`}
+                  onClick={() =>
+                    setNewTerminalDialog((prev) => ({
+                      ...prev,
+                      cli: provider.id,
+                      // Switching provider invalidates the old model id.
+                      model: provider.defaultModel || getModelForCli(provider.id),
+                    }))
+                  }
+                >
+                  {provider.label}
+                </button>
+              ))}
+            </div>
+
+            <div className="settings-label">{t("pickModel")}</div>
+            {modelOptionsLoading && !modelOptions.length ? (
+              <div className="settings-note">{t("loading")}</div>
+            ) : (
+              <div className="settings-select-group" role="group" aria-label={t("pickModel")}>
+                {modelOptions.map((model) => (
+                  <button
+                    key={model.id}
+                    type="button"
+                    className={`settings-select ${newTerminalDialog.model === model.id ? "active" : ""}`}
+                    onClick={() => setNewTerminalDialog((prev) => ({ ...prev, model: model.id }))}
+                  >
+                    <span className="settings-select-name">{model.label}</span>
+                    {model.default ? <span className="settings-select-tag">{t("modelDefault")}</span> : null}
+                  </button>
+                ))}
+              </div>
+            )}
+            {modelOptionsNoteKey ? <div className="settings-note">{t(modelOptionsNoteKey)}</div> : null}
+
+            <div className="picker-actions">
+              <button type="button" className="picker-submit" onClick={confirmNewTerminal}>
+                {t("createTerminal")}
+              </button>
+              <button type="button" className="picker-nav" onClick={() => setNewTerminalDialog(null)}>
+                {t("cancel")}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       <DirectoryPickerModal
         open={pickerOpen}
