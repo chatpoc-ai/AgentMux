@@ -1,200 +1,357 @@
-# AgentMux-Mac 项目架构说明
+# AgentMux Project Architecture
 
-本文档描述本仓库（`agentmux-mac`）的**实际实现**架构：基于 Node.js、tmux、WebSocket 与 React/xterm 的多终端编排与 Cursor CLI `agent` 集成。若需通用概念背景，可对照 [`AgentMux_Technical_Architecture_Documentation.md`](./AgentMux_Technical_Architecture_Documentation.md)（偏目标与组件清单）；本文以**代码与目录**为准。
+[English](Project_Architecture.md) · [简体中文](Project_Architecture.zh-CN.md)
 
----
-
-## 1. 项目定位
-
-**AgentMux-Mac** 在浏览器中提供 Web UI，用于：
-
-- 为每个「工作区目录」创建 **Project**，每个 Project 下挂多个 **Terminal**（对应独立 **tmux session**）。
-- 每个 Terminal 内自动启动 **Cursor CLI `agent`**，并注入可配置的 **bootstrap 指令**（含事件总线 HTTP 上报约定）。
-- 通过 **WebSocket** 将终端输出实时推到前端 **xterm.js**；通过 **HTTP API** 接收 agent 侧 `POST /api/events`，实现**事件总线**与跨终端协作。
-
-底层假设：**本机已安装 `tmux`**，且 `agent` 可在 `PATH` 中解析（或通过 `AGENT_BIN` 指定）。
+This document describes the **actual implementation** in this repository
+(`agentmux`): multi-terminal orchestration built on Node.js, tmux, WebSocket and
+React/xterm, running Cursor Agent, Codex CLI and Claude Code side by side. For
+product-level background see
+[`AgentMux_Technical_Architecture_Documentation.md`](./AgentMux_Technical_Architecture_Documentation.md);
+this document defers to the **code and directory layout**.
 
 ---
 
-## 2. 技术栈一览
+## 1. What it is
 
-| 层级 | 技术 |
-|------|------|
-| 前端 | React 19、Vite 8、xterm.js 5、xterm-addon-fit |
-| 后端 | Node.js ≥18、Express 4、`ws`（WebSocket） |
-| 进程编排 | `tmux`（`new-session`、`send-keys`、`capture-pane`、`pipe-pane`、`kill-session`） |
-| 日志与流式输出 | `tail -F -n 0` 跟随每终端日志文件 |
-| 静态资源 | 生产环境由 Express 托管 `dist/`（`npm run build` 产物） |
+AgentMux serves a browser UI that:
+
+- Creates a **Project** per workspace directory, each holding several
+  **Terminals** (one **tmux session** each).
+- Starts an **agent CLI** in each terminal with a configurable **bootstrap
+  instruction**. **The CLI and model are chosen per terminal** — one project can
+  run one pane on Claude, another on Codex, another on Cursor.
+- Streams terminal output to **xterm.js** over **WebSocket**, and accepts agent
+  reports over an **HTTP API**, forming an **event bus** for cross-terminal
+  collaboration.
+
+Assumes **tmux is installed** and at least one agent CLI resolves on `PATH`
+(`agent` / `codex` / `claude`, or a path given via environment variable).
+
+No native modules, so macOS and Linux both work.
 
 ---
 
-## 3. 高层架构
+## 2. Stack
+
+| Layer | Technology |
+|-------|-----------|
+| Frontend | React 19, Vite 8, xterm.js 5, xterm-addon-fit |
+| Backend | Node.js ≥18, Express 4, `ws` |
+| Process orchestration | `tmux` (`new-session`, `send-keys`, `capture-pane`, `pipe-pane`, `display-message`, `kill-session`) |
+| Output streaming | `fs.watch` plus an 80ms poll, reading each terminal's log incrementally with `fs.readSync` |
+| Static assets | Express serves `dist/` in production (`npm run build` output) |
+
+---
+
+## 3. High-level architecture
 
 ```mermaid
 flowchart TB
-  subgraph browser["浏览器"]
+  subgraph browser["Browser"]
     UI["React UI + xterm"]
   end
   subgraph node["Node: server/index.js"]
-    HTTP["Express: /api/* + 静态 dist"]
+    HTTP["Express: /api/* + static dist"]
     WS["WebSocket /ws"]
     MUX["AgentMuxServer"]
+    PROV["server/providers/*"]
   end
-  subgraph os["操作系统"]
+  subgraph os["Operating system"]
     TMUX["tmux sessions"]
-    AGENT["cursor-agent CLI"]
-    LOG["wN.log 每终端"]
+    AGENT["agent / codex / claude"]
+    LOG["wN.log per terminal"]
   end
-  UI <-->|"WS: snapshot / output / bus_event"| WS
-  UI -->|"HTTP GET 资源"| HTTP
-  AGENT -->|"POST /api/events + X-AgentMux-Token"| HTTP
+  UI <-->|"WS: snapshot / output / terminal_status / bus_event"| WS
+  UI -->|"HTTP GET assets"| HTTP
+  AGENT -->|"agentmux CLI -> POST /api/* + X-AgentMux-Token"| HTTP
+  MUX --> PROV
   MUX --> TMUX
-  MUX -->|"tail -F"| LOG
+  MUX -->|"fs.watch + incremental read"| LOG
   TMUX -->|"pipe-pane >> log"| LOG
   TMUX --> AGENT
 ```
 
-**要点：**
+**Key points:**
 
-- **实时输出**：tmux 面板输出经 `pipe-pane` 写入日志文件，服务端用 `tail -F` 仅转发**新字节**到浏览器（避免全量重放破坏 TUI）。
-- **切换/刷新时的画面**：使用 `tmux capture-pane -p -e -J` 获取带 ANSI 的当前帧（见 `request_snapshot`），而非重放历史日志。
-- **事件总线**：浏览器或 agent 通过 HTTP / WebSocket 投递事件，服务端合并进 Project 的 `history` 并广播 `bus_event`。
-
----
-
-## 4. 目录与职责
-
-| 路径 | 职责 |
-|------|------|
-| `server/index.js` | HTTP + WebSocket 入口；`AgentMuxServer`：Project/Terminal 生命周期、tmux、tail、capture、事件广播与持久化 |
-| `server/instruction.js` | 加载 `config/agent-instruction.md`（或环境变量覆盖）；合并 `extra-instruction.md`；生成 `run_agent_<n>.sh`（heredoc 注入 prompt） |
-| `config/agent-instruction.md` | 全局 agent 引导模板；占位符由 `instruction.expandTemplate` 展开，与 `buildPromptVars` 一致：`{{PORT}}`、`{{GROUP_ID}}`、`{{CWD}}`、`{{SESSION_ID}}`、`{{API_BASE}}` |
-| `src/App.jsx` | 主 UI：项目树、终端侧栏、xterm、事件总线展示、WebSocket 协议处理 |
-| `src/main.jsx` / `src/styles.css` | 入口与全局样式 |
-| `vite.config.mjs` | 开发服务器与 `dist` 构建 |
-| `index.html` | Vite 入口 HTML |
-| `public/` | 历史/备用静态文件（当前主流程以 Vite `src/` + `dist/` 为主） |
-| `run.sh` | 构建前端、后台启动 `node server/index.js`，写 `.agentmux.pid` 与 `agentmux.log` |
-| `dist/` | `npm run build` 输出；`npm start` 依赖其存在 |
-
-**用户态持久数据（仓库外）：**
-
-- `~/.agentmux/projects.json`：Project 与终端元数据、事件历史摘要。
-- `~/.agentmux/projects/<projectId>/`：该 Project 的 `extra-instruction.md`、`run_agent_*.sh`、各终端 `wN.log`。
+- **Live output**: pane output is piped into a log file; the server forwards
+  only **new bytes** (a full replay would corrupt an alt-screen TUI).
+- **Only to whoever is watching**: `output` messages go only to clients
+  **subscribed to that terminal** (§7).
+- **Repaint on switch/refresh**: `tmux capture-pane -p -e -J` yields the current
+  frame with ANSI intact (see `request_snapshot`), rather than replaying history.
+- **Activity on its own channel**: each pane's rendered frame is hashed once a
+  second to decide busy/idle, and `terminal_status` is broadcast only on a
+  transition (§7).
 
 ---
 
-## 5. 后端核心：`AgentMuxServer`
+## 4. Directory layout
 
-### 5.1 领域模型
+| Path | Responsibility |
+|------|---------------|
+| `server/index.js` | HTTP + WebSocket entry; `AgentMuxServer`: project/terminal lifecycle, tmux, log streaming, capture, status polling, event broadcast, persistence |
+| `server/providers/` | Agent CLI abstraction. `base.js` (bootstrap template + CLI shim install), `cursor.js` / `codex.js` / `claude.js`, `index.js` (registry and `normalizeCli`) |
+| `server/instruction.js` | Loads `config/agent-instruction.md` (or an override), merges `extra-instruction.md`, assembles the final prompt |
+| `cli/index.js` | The `agentmux` command agents run inside their pane |
+| `config/agent-instruction.md` | Shared bootstrap template; placeholders expanded by `expandTemplate` and matching `buildPromptVars`: `{{PORT}}`, `{{GROUP_ID}}`, `{{CWD}}`, `{{SESSION_ID}}`, `{{API_BASE}}` |
+| `src/App.jsx` | The UI: project tree, terminal sidebar, xterm, event log, settings, new-terminal dialog, WebSocket protocol |
+| `src/main.jsx` / `src/styles.css` | Entry point and global styles |
+| `vite.config.mjs` / `index.html` | Build config and Vite entry |
+| `public/` | Legacy static files from the pre-React UI; not loaded by the current page |
+| `run.sh` | Builds the frontend, starts the server in the background, writes `.agentmux.pid` and `agentmux.log` |
 
-- **ProjectSession**：`id`（即 `groupId`）、`cwd`、`name`、`baseDir`（`~/.agentmux/projects/<id>`）、`terminals[]`、`history[]`。
-- **TerminalSession**：`id`、`index`、`label`、`name`（tmux session 名，如 `amux_<projectId>_<index>_<uuid>`）、`logPath`。
+**User state (outside the repository):**
 
-### 5.2 创建与恢复
-
-- **新建**：`createProject(cwd, count)` 为每个终端调用 `_spawnTerminal`：创建 tmux session、配置 `pipe-pane`、启动 `tail`、写入并执行 bootstrap 脚本。
-- **恢复**：启动时 `restoreFromDisk()` 读取 `projects.json`；若 tmux session 已不存在则按启动路径重建并重新注入 agent。
-
-### 5.3 刻意行为：终端尺寸
-
-- tmux session **使用默认 pane 尺寸**（代码注释：约 80×24），**不向 tmux 同步浏览器 xterm 的行列**（`resizeTerminal` 为空操作），以避免 Cursor agent TUI 在 SIGWINCH 后出现大块反色条等问题。
-- 前端将 xterm **固定为与 tmux 一致**的列行（`App.jsx` 中 `TMUX_PANE_COLS` / `TMUX_PANE_ROWS`），保证显示与后端一致。
-
-### 5.4 HTTP 路由摘要
-
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| GET | `/api/health` | 健康检查；**HTTP JSON**，含 `ok`、`agentBin`、`projects`。与 WebSocket 首条 `snapshot` 一样都带项目快照，但**载体不同**（REST vs WS），字段以各自响应为准 |
-| GET | `/api/projects` | 项目列表 |
-| GET | `/api/system/roots` | 目录选择器根路径 |
-| GET | `/api/system/directories` | 目录枚举（`path` 查询参数） |
-| GET | `/api/projects/:projectId/tree` | 工作区内目录列表（`path` 为项目相对路径；单目录条目最多 `TREE_ENTRY_LIMIT`，默认 200） |
-| GET | `/api/projects/:projectId/file` | 读取工作区内单个文件（`path` 必填，项目相对路径）。JSON 含 `content`（UTF-8）、`truncated`；单文件最多 **256KB**，超出截断 |
-| POST | `/api/events` | 事件总线；请求体需含 `projectId` 或 `groupId`。鉴权：`X-AgentMux-Token` 头，或查询参数 `token`（与头等价） |
-| GET | `*` | 未命中上述路由且非 `dist` 内已有静态文件时，SPA 回退到 `dist/index.html`（需已构建） |
-
-生产环境托管 `dist/` 时，Express 先 `express.static(DIST_DIR)` 再注册 `GET *`，因此带扩展名的构建资源（如 `assets/*.js`）直接走静态文件，**不会**误落到 SPA。
-
-### 5.5 WebSocket（`/ws`）消息类型（节选）
-
-**客户端 → 服务端：** `create_project`、`add_terminal`、`input`、`request_snapshot`、`emit_event`（浏览器向总线发事件）、`rename_terminal`、`close_terminal`、`delete_project`、`resize`（服务端忽略尺寸）等。
-
-**服务端 → 客户端：** `snapshot`、`output`、`bus_event`、`terminal_snapshot`、`project_created`、`terminal_added`、`error` 等。
+- `~/.agentmux/projects.json` — projects and terminal metadata (including each
+  terminal's `cli` / `model`), event history, global settings.
+- `~/.agentmux/settings.json` — UI language and the defaults offered to new terminals.
+- `~/.agentmux/bin/agentmux` — the CLI shim placed on each agent's `PATH`,
+  rewritten on every spawn.
+- `~/.agentmux/projects/<projectId>/` — that project's `extra-instruction.md`,
+  `run_agent_*.sh`, and each terminal's `wN.log`.
 
 ---
 
-## 6. Agent 引导与事件上报
+## 5. Backend: `AgentMuxServer`
 
-1. `instruction.js` 读取模板与 `~/.agentmux/projects/<id>/extra-instruction.md`，按 **§4** 中 `config/agent-instruction.md` 一行所列占位符展开（`{{PORT}}`、`{{GROUP_ID}}` 等；变量名与模板内 `{{…}}` 须一致）。
-2. `writeAgentBootstrapScript` 生成 `run_agent_<index>.sh`：导出 `AGENTMUX_GROUP_ID`、`AGENTMUX_SESSION_ID`、`AGENTMUX_API_BASE`、`AGENTMUX_TOKEN`，并以 heredoc 将完整 prompt 传给 `agent`（默认附加 `--yolo`，可通过 `AGENTMUX_AGENT_FLAGS` 调整）。
-3. Agent 通过 `curl` 或等价方式 **仅经 HTTP** 上报 `done` / `require_confirmation` 等事件；**终端纯文本不会自动进入总线**。
+### 5.1 Domain model
 
----
+- **ProjectSession**: `id` (also `groupId`), `cwd`, `name`, `baseDir`, `roots[]`,
+  `terminals[]`, `history[]`.
+- **TerminalSession**: `id`, `index`, `label`, `name` (tmux session name, e.g.
+  `amux_<projectId>_<index>_<uuid>`), `logPath`, **`cli`**, **`model`**,
+  `status`, `frameHash`, `attention`.
 
-## 7. 事件总线（`emitEvent`）
+`cli` / `model` live **on the terminal, not globally**: chosen at creation and
+persisted, so a restart rebuilds each pane with its own provider and changing
+the global default leaves existing terminals alone.
 
-- 入参可包含：`type`、`from`、`to`、`text`、`payload`、`appendEnter`。
-- 事件写入对应 Project 的 `history`（最多保留约 200 条），并 **broadcast** `bus_event` 给所有 WebSocket 客户端。
-- **`to` 路由规则（易踩坑）：** 服务端用 `terminals.find((term) => term.id === to)` 解析目标。**`to` 必须是该终端的 `id`（快照里每条终端的短 id）**，不能用 tmux session 名。匹配失败时事件仍会进 `history` 并广播，但**不会**向任何 pane 注入按键或 curl。
-- 若 `to` 解析成功：
-  - `text` 有值：向该 tmux 会话 **注入按键**（`appendEnter` 默认 `true` 时末尾补 Enter）。
-  - `text` 省略：向目标注入一条 **curl**，把同一条事件再 `POST` 到 `/api/events`（用于跨 pane 触发）。
-- **`from`：** HTTP 未带 `from` 时记为 `"http"`；浏览器经 WS 发事件时源为 `"browser"`。agent 侧常用 `AGENTMUX_SESSION_ID`（tmux 名）作为 `from` 展示来源；与 `to` 不同，`from` **不参与**目标解析。
+### 5.2 Creation and restore
 
----
+- **New**: `createProject(cwd, initialCount, name)` calls
+  `_spawnTerminal(project, index, choice)` per terminal: create the tmux session,
+  attach `pipe-pane`, start log streaming, write and run the bootstrap script.
+  Omitting `choice` falls back to the global settings.
+- **Restore**: `restoreFromDisk()` reads `projects.json` at startup. A surviving
+  tmux session gets its log pipe re-attached; a dead one is respawned **with that
+  terminal's own `cli` / `model`**.
 
-## 8. 配置与环境变量
+### 5.3 Deliberate: terminal size
 
-| 变量 | 作用 |
-|------|------|
-| `PORT` / `HOST` | HTTP 监听（默认 `9988`、`0.0.0.0`） |
-| `AGENTMUX_TOKEN` | 与 `POST /api/events` 的 `X-AgentMux-Token` 一致；默认不安全占位，生产务必修改 |
-| `AGENT_BIN` | 覆盖 `agent` 可执行路径 |
-| `AGENTMUX_AGENT_INSTRUCTION_FILE` | 覆盖全局 instruction 模板文件路径 |
-| `AGENTMUX_AGENT_FLAGS` | 未设置时默认 `--yolo`；设为空字符串则不加额外参数（恢复逐步确认） |
+- tmux sessions keep the **default pane size** (about 80×24) and the browser's
+  xterm dimensions are **not** synced to tmux (`resizeTerminal` is a no-op), which
+  avoids agent TUIs painting large reverse-video bars after SIGWINCH.
+- The frontend pins xterm to the same dimensions (`TMUX_PANE_COLS` /
+  `TMUX_PANE_ROWS` in `App.jsx`).
 
----
+### 5.4 Deliberate: `pipe-pane` without `-o`
 
-## 9. 构建与运行
+`pipe-pane -o` is a **toggle** — the man page says it "only opens a new pipe if
+no previous pipe exists, allowing a pipe to be toggled". Running it against a
+pane that is already piped **closes** the pipe, and that terminal goes silent in
+the browser. Without `-o` the call is idempotent. The status poller also checks
+`#{pane_pipe}` every fifth tick and re-establishes a dropped pipe, pushing a
+fresh snapshot afterwards.
 
-| 命令 | 说明 |
-|------|------|
-| `npm run dev` | Vite 开发服务器（默认 5173），需自行另启 `node server/index.js` 若要对全栈联调 |
-| `npm run build` | 产出 `dist/` |
-| `npm start` | 仅启动 `server/index.js`（需已有 `dist`） |
-| `./run.sh` | 构建 + 后台启动服务，日志 `agentmux.log` |
-| `npm run dev:server` | 仅启动 `node server/index.js`（与 `npm start` 相同脚本），常与 `npm run dev` 分两个终端联调 |
+### 5.5 Log recycling
 
----
+A terminal log is a **transport buffer, not an archive**: bytes are never
+replayed once streamed (a new client gets the current frame from `capture-pane`,
+and bytes already delivered live in each client's own xterm scrollback). So the
+log is truncated past `AGENTMUX_LOG_MAX_BYTES` (default 2MB), and only while the
+reader is caught up.
 
-## 10. 文档与实现的补充说明（待读者留意的改进点）
-
-前文各节已覆盖主路径；下列条目来自对 `server/index.js` 等与本文的对照，避免读文档时踩坑。
-
-### 10.1 健康检查：`/api/health` 与根路径
-
-- **JSON 健康与项目快照**仅 **`GET /api/health`**（返回 `ok`、`agentBin`、`projects` 等）。
-- 根路径 **`/health`**、**`/status`** 等**未**在 Express 中单独注册为 JSON；若请求未命中 `dist` 下的静态文件，会落入 **`GET *`** SPA 回退，可能返回 **`index.html` 且 HTTP 200**，易被误判为「健康接口」。监控与自动化脚本应固定请求 **`/api/health`**。
-- `/api/health` 体带项目列表快照，若极高频轮询会增加负载；生产环境建议合理间隔或使用专用探活逻辑。
-
-### 10.2 两处「200」上限勿混淆
-
-- **事件总线 `history`**：服务端与前端展示均按约 **200 条**截断（见 `serializeProject` / 前端 `slice(-200)`）。
-- **目录树 API**：`listTreeEntries` 受 **`TREE_ENTRY_LIMIT`（200）** 约束，指**单目录下列出的条目数**，与事件条数无关。超大目录下列表可能不完整。
-
-### 10.3 与 [`AgentMux_Technical_Architecture_Documentation.md`](./AgentMux_Technical_Architecture_Documentation.md) 的衔接
-
-- 产品级背景以该文档为准；**本仓库目录与路由以本文 §4、§5 及本节为准**。若技术总览中未提及 `file` 路由或 `dev:server`，以本文与源码为准。
+This is not an optional optimisation: an idle Claude Code pane keeps redrawing
+its TUI at roughly 3KB/s — about 280MB per terminal per day.
 
 ---
 
-## 11. 相关文档
+## 6. HTTP routes
 
-- [`AgentMux_Technical_Architecture_Documentation.md`](./AgentMux_Technical_Architecture_Documentation.md) — 产品级目标与组件说明（与 WSL 文档同源风格）。
-- [`run-sh.md`](./run-sh.md) — `run.sh` 行为说明。
-- [`terminal-sidebar-layout.md`](./terminal-sidebar-layout.md) — 终端侧栏布局相关笔记。
+| Method | Path | Auth | Purpose |
+|--------|------|------|---------|
+| GET | `/api/health` | — | Health check; `ok`, `agentBin`, `settings`, `projects` |
+| GET | `/api/projects` | — | Project list |
+| GET | `/api/providers` | — | Available agent CLIs and their default models |
+| GET | `/api/settings/model-options` | — | Model list for one CLI (`cli` query param) |
+| GET | `/api/system/roots` | — | Directory-picker roots |
+| GET | `/api/system/directories` | — | Directory listing (`path` query param) |
+| POST | `/api/system/directories` | — | Create a subdirectory under a browsed path (`name` must be a single path segment) |
+| GET | `/api/projects/:projectId/tree` | — | Directory listing inside the workspace; at most `TREE_ENTRY_LIMIT` (200) entries |
+| GET | `/api/projects/:projectId/file` | — | Read one file inside the workspace; **256KB** cap, truncated beyond |
+| GET | `/api/terminals` | Token | List every pane across projects |
+| POST | `/api/terminals/:ref/run` | Token | Type a command into a pane |
+| GET | `/api/terminals/:ref/output` | Token | Read a pane's scrollback back, ANSI stripped |
+| POST | `/api/terminals/:ref/interrupt` | Token | Send `C-c` to a pane |
+| POST | `/api/events` | Token | Event bus; body needs `projectId` or `groupId` |
+| GET | `*` | — | SPA fallback to `dist/index.html` (requires a build) |
+
+"Token" means the `X-AgentMux-Token` header or a `token` query parameter,
+carrying `AGENTMUX_TOKEN`.
+
+`:ref` may be a terminal `id`, a tmux session name, or a terminal label such as
+`Agent 2`. Label lookups resolve inside the caller's own project first.
+
+**Note**: the web UI and WebSocket have **no authentication at all**. The token
+protects only the agent-facing endpoints marked above.
 
 ---
 
-*文档版本：与仓库实现同步撰写；若行为以 `server/index.js` 为准。*
+## 7. WebSocket (`/ws`)
+
+**Client → server:** `create_project`, `add_terminal`, `input`,
+`request_snapshot`, `emit_event`, `rename_terminal`, `close_terminal`,
+`delete_project`, `add_project_root`, `remove_project_root`, `update_settings`,
+`subscribe_terminal`, `resize` (dimensions ignored server-side).
+
+**Server → client:** `snapshot`, `output`, `terminal_status`, `bus_event`,
+`terminal_snapshot`, `project_created`, `project_existing`, `project_deleted`,
+`project_root_added`, `project_root_removed`, `project_tree_changed`,
+`terminal_added`, `terminal_renamed`, `terminal_closed`, `terminal_input`,
+`settings_updated`, `error`.
+
+### 7.1 Output subscription
+
+`subscribe_terminal` declares which terminal a connection currently displays;
+`output` is sent only to matching clients. **A connection that never subscribed
+still receives everything** (older clients keep working).
+
+Bytes for a hidden pane are useless to a client — switching to it repaints the
+whole frame from `capture-pane` — so broadcasting every pane to every client
+would multiply traffic by the number of panes.
+
+### 7.2 Activity status
+
+`terminal_status` carries `idle` / `working` / `waiting` and is sent **only on a
+transition**.
+
+It is derived from **hashing the rendered frame**, not from byte volume: an idle
+Claude Code pane redraws constantly while an idle Codex pane
+(`--no-alt-screen`) emits nothing, so byte volume cannot tell them apart. A hash
+unchanged for `WORKING_GRACE_MS` (3s) means idle.
+
+A `require_confirmation` event puts a terminal into `waiting` (highest
+precedence), cleared by that terminal's next `done` / `status` / `agent_reply`.
+Frame hashing needs no cooperation from the agent, so a silent agent degrades to
+busy/idle rather than reporting a false "waiting".
+
+---
+
+## 8. Agent bootstrap and reporting
+
+1. `instruction.js` loads the template plus
+   `~/.agentmux/projects/<id>/extra-instruction.md` and expands the placeholders
+   listed in §4.
+2. The provider's `buildBootstrapScript` writes `run_agent_<index>.sh`: exports
+   `AGENTMUX_GROUP_ID`, `AGENTMUX_SESSION_ID`, `AGENTMUX_TERMINAL_ID`,
+   `AGENTMUX_API_BASE`, `AGENTMUX_TOKEN`, prepends `~/.agentmux/bin` to `PATH`,
+   and passes the full prompt to the CLI via a heredoc.
+3. Agents report with the `agentmux` command; **terminal text never reaches the
+   bus on its own**:
+
+   ```sh
+   agentmux event --type done --summary "..."
+   printf '%s' "$REPORT" | agentmux event --type done --summary -   # multi-line / quoted
+   ```
+
+Per-provider defaults:
+
+| CLI | Default flags | Override |
+|-----|--------------|----------|
+| Cursor Agent | `--yolo` | `AGENTMUX_AGENT_FLAGS` |
+| Codex CLI | `--no-alt-screen --dangerously-bypass-approvals-and-sandbox`, reasoning effort from the model catalog | (fixed) |
+| Claude Code | `--permission-mode bypassPermissions` | `AGENTMUX_CLAUDE_FLAGS` |
+
+Model lists: Cursor and Codex are read from the CLI itself
+(`agent --list-models` / `codex debug models`, both cached for five minutes).
+Claude Code has no model-listing command, so the `opus` / `sonnet` / `haiku` /
+`fable` aliases are used — the CLI resolves those to the current release, so
+they do not go stale.
+
+Claude shows a trust dialog the first time it runs in a directory, and nobody is
+there to answer it in a freshly bootstrapped pane, so the project directory is
+marked as trusted in `~/.claude.json` before spawning.
+
+---
+
+## 9. Event bus (`emitEvent`)
+
+- Accepts `type`, `from`, `to`, `text`, `payload`, `appendEnter`.
+- **Record before routing**: the event is appended to the project's `history`
+  (about 200 entries) and broadcast as `bus_event` *before* delivery is
+  attempted. **An event with no `to` is a report aimed at the operator** — the
+  documented `done` shape has none — and must reach the event log.
+- `to` is resolved by `resolveTerminalRef`, matching terminal `id`, then tmux
+  session name, then label.
+- When `to` resolves:
+  - with `text`: **inject keystrokes** into that tmux session (`appendEnter`
+    defaults to true, appending Enter).
+  - without `text`: inject a **curl** that POSTs the same event back to
+    `/api/events` (used to trigger across panes).
+- `terminal_input` is raw keystroke passthrough and is not recorded.
+- **`from`**: absent over HTTP it is recorded as `"http"`; from the browser over
+  WebSocket it is `"browser"`. `from` also updates that terminal's `waiting`
+  state (§7.2).
+
+---
+
+## 10. Configuration
+
+| Variable | Purpose |
+|----------|---------|
+| `PORT` / `HOST` | Listen address (default `9988`, `0.0.0.0`) |
+| `AGENTMUX_TOKEN` | Auth for agent-facing endpoints; the default is an insecure placeholder |
+| `AGENT_BIN` / `AGENTMUX_CODEX_BIN` / `AGENTMUX_CLAUDE_BIN` | Override each CLI's binary |
+| `AGENTMUX_AGENT_FLAGS` / `AGENTMUX_CLAUDE_FLAGS` | Replace a provider's default flags; empty restores per-command confirmation |
+| `AGENTMUX_LOG_MAX_BYTES` | Per-terminal log cap (default 2MB, floor 64KB) |
+| `AGENTMUX_AGENT_INSTRUCTION_FILE` | Override the shared instruction template |
+
+---
+
+## 11. Build and run
+
+| Command | Purpose |
+|---------|---------|
+| `npm run dev` | Vite dev server (5173); run `node server/index.js` separately for full-stack work |
+| `npm run build` | Produce `dist/` |
+| `npm start` | Start `server/index.js` only (needs an existing `dist`) |
+| `npm run dev:server` | Same as `npm start`; usually paired with `npm run dev` in another shell |
+| `./run.sh` | Build, then start in the background, logging to `agentmux.log` |
+
+`run.sh` uses `lsof` for port cleanup, which some minimal Linux images do not
+ship (`apt install lsof`, or run `node server/index.js` directly).
+
+---
+
+## 12. Gotchas
+
+### 12.1 Health checks must use `/api/health`
+
+`/health` and `/status` are **not** registered as JSON routes. Anything that
+misses a file under `dist` falls through to the `GET *` SPA handler and returns
+**`index.html` with HTTP 200**, which is easily mistaken for a healthy endpoint.
+Monitoring should request `/api/health` specifically.
+
+That response carries a snapshot of every project, so frequent polling is not
+free.
+
+### 12.2 Two different limits of 200
+
+- **Event `history`**: truncated to about **200** entries, server-side and in the UI.
+- **Directory tree API**: `TREE_ENTRY_LIMIT` (200) bounds the **entries listed in
+  one directory**, unrelated to event count. Very large directories list
+  incompletely.
+
+---
+
+## 13. Related documents
+
+- [`AgentMux_Technical_Architecture_Documentation.md`](./AgentMux_Technical_Architecture_Documentation.md)
+  — product-level goals and components.
+- [`run-sh.md`](./run-sh.md) — what `run.sh` does.
+- [`terminal-sidebar-layout.zh-CN.md`](./terminal-sidebar-layout.zh-CN.md) —
+  historical notes on the pre-React sidebar layout (Chinese only).
+
+---
+
+*The source in `server/index.js` is authoritative; where behaviour differs, trust the code.*

@@ -1,101 +1,140 @@
-# `run.sh` 使用说明
+# `run.sh`
 
-`run.sh` 用于在后台启动 AgentMux 的 Node 服务（`server/index.js`），并在启动前尽量释放占用的端口与旧进程，避免「端口已被占用」导致启动失败。
+[English](run-sh.md) · [简体中文](run-sh.zh-CN.md)
 
-## 前置条件
+`run.sh` **rebuilds the frontend** and starts the AgentMux server
+(`server/index.js`) in the background, clearing the port and any previous
+instance first so startup does not fail on "address already in use".
 
-- 项目根目录下可执行：`node server/index.js`
-- 系统具备 `lsof`（用于检测/结束监听端口的进程）
+Re-run it after changing code; there is no need to stop the old instance by hand.
 
-## 基本用法
+## Requirements
 
-在项目根目录执行：
+- `npm install` has been run (the script calls `npm run build`)
+- `node server/index.js` is runnable from the repository root
+- `lsof` is available (used to find and stop whatever holds the port)
+
+> **On Linux**: some minimal images do not ship `lsof` (`apt install lsof`). If
+> installing it is inconvenient, skip this script and run
+> `node server/index.js` directly — but then make sure the port is free yourself.
+
+## Usage
+
+From the repository root:
 
 ```bash
 ./run.sh
 ```
 
-或使用 `bash` 显式调用：
+or explicitly through bash:
 
 ```bash
 bash run.sh
 ```
 
-成功时会在终端打印：
+On success it prints the local URL (default <http://127.0.0.1:9988>), the LAN
+URL, the PID, and the log path.
 
-- 本地访问地址（默认 `http://127.0.0.1:9988`）
-- 进程 PID
-- 日志文件路径
+## Environment
 
-## 环境变量
+The script itself reads and passes through only these two:
 
-| 变量 | 说明 | 默认值 |
-|------|------|--------|
-| `PORT` | HTTP 服务监听端口 | `9988` |
+| Variable | Purpose | Default |
+|----------|---------|---------|
+| `PORT` | HTTP listen port | `9988` |
+| `HOST` | Listen address | `0.0.0.0` |
 
-示例：指定端口 `3000` 启动：
+Listen on loopback only, port 3000:
 
 ```bash
-PORT=3000 ./run.sh
+PORT=3000 HOST=127.0.0.1 ./run.sh
 ```
 
-### Cursor Agent 命令审批（服务端侧）
+> The `0.0.0.0` default means **anyone on the same network can open the page,
+> and the web UI has no authentication**. Outside a trusted network, bind
+> `127.0.0.1` and reach it over an SSH tunnel.
 
-若通过 AgentMux 启动 Cursor `agent`，服务端默认可能使用 `--yolo`（自动执行 shell）。若希望恢复「每条命令需确认」，在 **执行 `./run.sh` 之前** 导出环境变量（子进程 `node` 会继承），例如：
+Everything else (`AGENTMUX_TOKEN`, `AGENTMUX_LOG_MAX_BYTES`, …) is read by the
+server and inherited if exported. Full list in
+[`Project_Architecture.md`](./Project_Architecture.md) §10.
+
+### Command approval
+
+Every agent CLI is started in auto-approve mode and will not ask per command:
+
+| CLI | Default flags | Override |
+|-----|--------------|----------|
+| Cursor Agent | `--yolo` | `AGENTMUX_AGENT_FLAGS` |
+| Codex CLI | `--dangerously-bypass-approvals-and-sandbox` | (fixed) |
+| Claude Code | `--permission-mode bypassPermissions` | `AGENTMUX_CLAUDE_FLAGS` |
+
+To restore per-command confirmation, export the relevant variable as empty
+**before** running `./run.sh` (the `node` child inherits it):
 
 ```bash
 export AGENTMUX_AGENT_FLAGS=
+export AGENTMUX_CLAUDE_FLAGS=
 ./run.sh
 ```
 
-或按需使用例如 `AGENTMUX_AGENT_FLAGS=--force`（以 `server/instruction.js` 中的解析逻辑为准）。
+Parsing lives in `getFlagParts()` in `server/providers/<cli>.js`. These
+variables are read by the server when it launches a CLI; they are not coupled to
+`run.sh` itself.
 
-该变量由服务端在拉起 `agent` 时读取，与 `run.sh` 脚本内容无直接耦合。
+## What it does
 
-## 启动时做了什么
+1. **Stop the previous instance by PID file**
+   If `.agentmux.pid` exists and that PID is alive, `kill` it (`SIGKILL` if
+   needed), then remove the file.
 
-1. **根据 PID 文件停止旧实例**  
-   若存在 `.agentmux.pid` 且其中 PID 仍在运行，会先 `kill`（必要时 `SIGKILL`），再删除 PID 文件。
+2. **Free the port**
+   `kill` whatever is `LISTEN`ing on `PORT` (`SIGKILL` if needed).
 
-2. **释放监听端口的进程**  
-   对当前 `PORT` 上处于 `LISTEN` 的进程执行 `kill`（必要时 `SIGKILL`），避免端口被占用。
+3. **Bail out if the port is still busy**
+   Exits with an error and an `lsof` command to investigate.
 
-3. **端口仍不可用则退出**  
-   若清理后端口仍被占用，脚本报错退出，并提示用 `lsof` 排查。
+4. **Build the frontend**
+   Runs `npm run build` to produce `dist/`. The server serves the build output,
+   so **skipping this leaves the page unchanged**.
 
-4. **后台启动服务**  
-   使用 `nohup node server/index.js` 将标准输出与标准错误追加写入项目根目录下的 `agentmux.log`，并把新进程号写入 `.agentmux.pid`。
+5. **Start in the background**
+   `nohup node server/index.js`, appending stdout and stderr to `agentmux.log`,
+   writing the new PID to `.agentmux.pid`.
 
-## 日志与 PID
+6. **Wait for readiness**
+   Polls for up to about 5 seconds for the port to listen. If the process exits
+   early or the wait times out, it prints the last 40 lines of `agentmux.log`
+   and exits non-zero.
 
-| 路径 | 说明 |
-|------|------|
-| `agentmux.log` | 服务运行日志（追加写入） |
-| `.agentmux.pid` | 当前后台进程的 PID |
+## Log and PID
 
-## 停止服务
+| Path | Purpose |
+|------|---------|
+| `agentmux.log` | Server log (appended) |
+| `.agentmux.pid` | PID of the current background process |
 
-任选其一：
+## Stopping
+
+Either:
 
 ```bash
 kill "$(cat .agentmux.pid)"
 ```
 
-或直接再次执行 `./run.sh`：脚本会先尝试停止旧 PID 与占用端口的进程，再启动新实例（**相当于替换为新的后台进程**）。
+or just run `./run.sh` again — it stops the old process and the port holder
+before starting a replacement.
 
-## 常见问题
+## Troubleshooting
 
-**端口仍被占用**
-
-按脚本提示执行：
+**Port still busy**
 
 ```bash
 lsof -nP -iTCP:9988 -sTCP:LISTEN
 ```
 
-（若使用了自定义 `PORT`，将 `9988` 换成你的端口。）确认是否有其他程序占用后，结束对应进程或换用其他 `PORT`。
+(substitute your `PORT`). Identify the holder, stop it, or pick another port.
 
-**无执行权限**
+**Not executable**
 
 ```bash
 chmod +x run.sh

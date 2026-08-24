@@ -1,6 +1,26 @@
-# 左侧终端列表 + 右侧主终端区：详细实现说明
+# 左侧终端列表 + 右侧主终端区：详细实现说明（历史文档）
 
-目标：**新建的 tmux 终端出现在左侧列表**；**右侧最大区域只显示当前选中会话的 xterm**。后端 WebSocket / tmux 协议 **不必改**；改动集中在 `public/index.html`、`public/styles.css`，`public/app.js` 仅在有新 DOM 需求时小改。
+**简体中文** · This historical document is Chinese-only; see [`Project_Architecture.md`](./Project_Architecture.md) for the current architecture in English.
+
+> ## ⚠️ 这是一份历史文档，不要照着改代码
+>
+> 本文写于界面还是 `public/` 下原生 JS 的时期，通篇讲的是修改
+> `public/index.html`、`public/styles.css`、`public/app.js` 以及
+> `#tabs` / `#terminalHost` 这些 DOM 节点。
+>
+> **这套实现已被 React 取代**。当前界面全部在 [`src/App.jsx`](../src/App.jsx)，
+> 侧栏与终端区的实际布局在那里，样式在 [`src/styles.css`](../src/styles.css)。
+> `src/App.jsx` 对本文提到的 DOM id **没有任何引用**。
+>
+> `public/` 目录目前是遗留文件：Vite 会把它复制进 `dist/`，但页面入口是
+> React 构建产物，那几个文件不会被加载。
+>
+> 保留本文是因为 §8 记录了迁移到 React 时的对照与注意事项，仍有参考价值。
+> 若只想了解当前架构，请读 [`Project_Architecture.zh-CN.md`](./Project_Architecture.zh-CN.md)。
+
+---
+
+目标（当时）：**新建的 tmux 终端出现在左侧列表**；**右侧最大区域只显示当前选中会话的 xterm**。后端 WebSocket / tmux 协议 **不必改**；改动集中在 `public/index.html`、`public/styles.css`，`public/app.js` 仅在有新 DOM 需求时小改。
 
 下文默认你已读过当前结构：`#tabs` 里动态插入 `.tab`，`#terminalHost` 挂 **单个** `Terminal` 实例，`scrollback` 按 `terminalId` 存缓冲（见 `renderTabs`、`setActive`、`appendOutput`、`ensureTerm`）。
 

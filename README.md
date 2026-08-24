@@ -1,5 +1,7 @@
 # AgentMux
 
+**English** · [简体中文](README.zh-CN.md)
+
 A browser UI for running several agent CLIs side by side, each in its own tmux
 session. Point it at a directory, start a terminal, pick which agent runs in
 it — Cursor Agent, Codex CLI, or Claude Code — and drive them all from one
@@ -91,4 +93,4 @@ hashing each pane's rendered frame — byte volume is not usable for this, since
 an idle Claude Code pane redraws continuously while an idle Codex pane emits
 nothing at all.
 
-Further design notes are in [`docs/`](docs/) (in Chinese).
+Further design notes are in [`docs/`](docs/), in English and Chinese.
