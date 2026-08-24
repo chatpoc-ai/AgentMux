@@ -50,6 +50,20 @@ const PROJECTS_DIR = path.join(STATE_DIR, "projects");
  * agent is stable — measured over 12 idle seconds, the frame hash did not
  * change once, then changed as soon as the agent was given work.
  */
+/**
+ * Gap between pasting text into a pane and sending the Enter that submits it.
+ *
+ * Agent TUIs detect a burst of input as a paste so that multi-line text does
+ * not submit line by line. An Enter arriving in the same burst is swallowed
+ * into that paste instead of being read as "submit", leaving the text sitting
+ * in the input box.
+ *
+ * Measured against a live pane: with no gap Codex failed to submit 5 out of 5
+ * attempts, and at 60ms it succeeded 5 out of 5. Claude Code submits either
+ * way, so the delay costs it nothing. 120ms leaves margin for a loaded machine.
+ */
+const ENTER_DELAY_MS = Math.max(0, Number(process.env.AGENTMUX_ENTER_DELAY_MS) || 120);
+
 const STATUS_POLL_MS = 1000;
 const WORKING_GRACE_MS = 3000;
 
@@ -1208,9 +1222,16 @@ class AgentMuxServer {
         tmux(["send-keys", "-t", target, "Enter"]);
       }
     }
-    if (appendEnter) {
-      tmux(["send-keys", "-t", target, "Enter"]);
-    }
+    if (!appendEnter) return;
+    // Deferred, not slept on: this runs on the request path, and blocking the
+    // event loop here would stall every other client's output for the delay.
+    setTimeout(() => {
+      try {
+        tmux(["send-keys", "-t", target, "Enter"]);
+      } catch {
+        /* pane closed while we waited */
+      }
+    }, ENTER_DELAY_MS);
   }
 
   /**
