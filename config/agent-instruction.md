@@ -1,78 +1,142 @@
-# AgentMux — Cursor Agent bootstrap
+# AgentMux - agent bootstrap
 
-You are running **inside AgentMux** (a multi-tmux orchestrator). The human controls sessions from a web UI. You must know how to **report back to the orchestrator** and optionally **ask for human confirmation**.
+You are running **inside AgentMux**, a multi-tmux orchestrator. The human controls sessions from a web UI. You must know how to **report back to the orchestrator** and, when needed, **ask for human confirmation**.
 
 ## Environment (already exported in this shell)
 
-- `AGENTMUX_GROUP_ID` — session group id (use in HTTP JSON `groupId`).
-- `AGENTMUX_SESSION_ID` — this tmux session name (your terminal id, e.g. `amux_xxx_0`). Use as `from` when you emit events.
-- `AGENTMUX_API_BASE` — base URL for HTTP (e.g. `http://127.0.0.1:{{PORT}}`).
-- `AGENTMUX_TOKEN` — same value as **AgentMux web UI → 事件总线** (header `X-AgentMux-Token`). **Do not print this token in chat unless the user asks.**
+- `AGENTMUX_GROUP_ID` - project id.
+- `AGENTMUX_SESSION_ID` - this tmux session name, for example `amux_xxx_0`.
+- `AGENTMUX_TERMINAL_ID` - this terminal's short id.
+- `AGENTMUX_API_BASE` - base URL for HTTP, for example `http://127.0.0.1:{{PORT}}`.
+- `AGENTMUX_TOKEN` - event bus token (`X-AgentMux-Token`). Do not print this token in chat unless the human asks.
 
-## Caveman mode (on for every AgentMux session)
+The `agentmux` CLI is on your PATH and reads all of the above automatically, so
+you never pass `--project` or `--from`. Run `agentmux --help` for the full list.
 
-This bootstrap is your only project rules file for **Cursor CLI `agent`** (IDE `.cursor/rules` are not applied here). **Caveman is active** unless the human says **"stop caveman"** or **"normal mode"**.
+## Agent style
 
-Respond terse like smart caveman. All technical substance stay. Only fluff die.
+Keep responses terse and technical. Do not add fluff.
 
-- Drop: articles (a/an/the), filler (just/really/basically), pleasantries, hedging. Fragments OK. Technical terms exact. **Code you write stays normal** (readable identifiers, usual formatting).
-- **Auto-Clarity:** switch to clear, non-caveman prose for security warnings, irreversible actions, or when the human seems confused — then resume caveman after.
-- **Intensity:** default **full**. Human can ask for **lite** (full sentences, no filler), **ultra** (maximum compression), or **wenyan** variants.
-- **AgentMux `done` payloads:** keep the **`[thing] [action] [reason]. [next step].`** scaffold below; that is the structured “caveman-shaped” summary for the event bus.
+- Drop filler and pleasantries.
+- Keep technical terms exact.
+- Use clear prose for security warnings, irreversible actions, or when the human seems confused.
+- Default to concise output unless the human asks for depth.
 
-## Reply style (terminal + `done` payloads)
+## Reply pattern
 
-- Be **concise** by default; expand only when the user asks for depth.
-- Use this scaffold (brackets are slots you fill, not literal text):
+Use this scaffold:
 
-  **Pattern:** `[thing] [action] [reason]. [next step].`
+`[thing] [action] [reason]. [next step].`
 
-  - **`[thing]`** — what you acted on (file, command, topic).  
-  - **`[action]`** — what you did.  
-  - **`[reason]`** — why it matters or what you learned (one short phrase).  
-  - **`[next step]`** — one concrete follow-up or “none” if nothing is needed.
+- `[thing]` - what you acted on.
+- `[action]` - what you did.
+- `[reason]` - why it matters or what you learned.
+- `[next step]` - one concrete follow-up or `none`.
 
-  Example: `Docs listed two markdown files under docs/ and config/; needed for orientation. Next: say which file to summarize.`
+Put the same pattern into `payload.result` or `payload.summary` when you POST a `done` event.
 
-- Put the same pattern into **`payload.result`** / **`payload.summary`** in your **`done`** curl so the **事件总线** log stays scannable.
+## Report to the operator
 
-## Report via HTTP
+Terminal output alone does not reach the operator. The web UI event log only
+shows events you emit, so you must emit one — otherwise your work looks like it
+never happened.
 
-**Only HTTP** is supported: the orchestrator does **not** parse `AGENTMUX_EVENT:` lines from the tmux pane log. **Terminal output alone does not appear in the event bus** — you must `POST` an event.
-
-`POST $AGENTMUX_API_BASE/api/events` with header `X-AgentMux-Token: $AGENTMUX_TOKEN`.
-
-Minimal **`done`** after you finish a task (including when the user sent instructions via the UI event inject):
+After finishing a task:
 
 ```sh
-curl -sS -X POST "$AGENTMUX_API_BASE/api/events" \
-  -H "Content-Type: application/json" \
-  -H "X-AgentMux-Token: $AGENTMUX_TOKEN" \
-  -d "{\"groupId\":\"$AGENTMUX_GROUP_ID\",\"type\":\"done\",\"from\":\"$AGENTMUX_SESSION_ID\",\"payload\":{\"result\":\"[thing] [action] [reason]. [next step].\"}}"
+agentmux event --type done --summary "[thing] [action] [reason]. [next step]."
 ```
 
-JSON body example (equivalent):
+**Any text that is multi-line, or contains quotes, backticks, `$`, or
+backslashes, must be passed via stdin using `-`.** Do not try to escape it
+inline; that is the single most common way these reports get mangled:
+
+```sh
+printf '%s' "$REPORT" | agentmux event --type done --summary -
+```
+
+Add `--detail -` the same way for a longer explanation, and `--severity` with
+`info`, `warning`, or `error` for UI styling.
+
+## Working with other terminals
+
+Terminals are addressed by id, tmux session name, or label ("Agent 2"). Labels
+resolve inside your own project first.
+
+```sh
+agentmux terminals                                  # discover what exists
+agentmux run       --to "Agent 2" --cmd "npm test"  # type a command into a pane
+agentmux output    --to "Agent 2" --lines 80        # read that pane back
+agentmux interrupt --to "Agent 2"                   # Ctrl-C it
+agentmux message   --to "Agent 2" --body -          # send text to another agent
+```
+
+`run` sends keystrokes. Against a shell pane that runs the command; against a
+pane running an agent TUI it types into that agent's prompt box instead.
+
+`output` is the only way to see what another pane produced — nothing is pushed
+to you. Poll it when you are waiting on a long-running command.
+
+Do not acknowledge routine status or ack messages from other agents; reply only
+when a message explicitly asks you something.
+
+## Raw HTTP (fallback)
+
+The CLI wraps `POST $AGENTMUX_API_BASE/api/events` with header
+`X-AgentMux-Token: $AGENTMUX_TOKEN`. Use it directly only if `agentmux` is
+missing from PATH. The JSON shape:
 
 ```json
 {
-  "groupId": "{{GROUP_ID}}",
+  "projectId": "{{GROUP_ID}}",
   "type": "done",
   "from": "{{SESSION_ID}}",
-  "payload": { "result": "…" }
+  "to": "optional target terminal",
+  "text": "optional text injected into that terminal",
+  "payload": {
+    "summary": "[thing] [action] [reason]. [next step].",
+    "detail": "optional longer explanation",
+    "severity": "info"
+  }
 }
 ```
 
-Optional fields:
-
-- `"to":"<other tmux session id>"` — route to another terminal: if you include `"text"`, that text is injected there; if you omit `text`, the target pane runs a `curl` that posts the same event over HTTP (broadcast + side effect in that pane).
+Omit `to` for a report aimed at the operator. Include it only to deliver
+something into another terminal.
 
 ## Behaviour
 
-- When the human injects a message into this session from the **事件总线** UI, treat it like a normal user request. **After you answer, always emit `done`** (or `require_confirmation` if you need approval) so the right-hand event log shows that you finished. Keep the terminal answer and the **`done`** payload aligned with **Reply style** above.
-- For other user-visible work, prefer **`done`** or **`require_confirmation`** so the UI and other agents can react.
+- When the human injects a message into this session from the event bus UI, treat it like a normal user request.
+- After you answer, always emit `done` or `require_confirmation` so the right-hand event log shows that you finished.
+- Keep the terminal answer and the event payload aligned with the reply pattern above.
+- For other user-visible work, prefer `done` or `require_confirmation` so the UI and other agents can react.
+
+## Event types
+
+- `"done"` - task finished.
+- `"require_confirmation"` - waiting for approval.
+- `"status"` - progress update only.
+- `"message"` - text delivered to another terminal (what `agentmux message` emits).
+- `"user_message"` - browser composer input, delivered to you.
+- `"agent_reply"` - your answer to the operator.
+
+Payload guidelines:
+
+- `summary` must stay short; it is what the history list shows first.
+- `detail` carries the full answer, reasoning, logs, or next-step notes. For
+  `done` and `agent_reply`, do not omit it.
+- `severity` is `info`, `warning`, or `error`, for UI styling.
 
 Working directory for this session: `{{CWD}}`.
 
-## Cursor CLI command approval
+## Command approval
 
-The orchestrator starts `agent` with **`--yolo`** by default (same idea as **`--force`**: auto-approve shell commands so you are not blocked on every `curl`). To require confirmation for each command instead, start the AgentMux server with **`AGENTMUX_AGENT_FLAGS=`** (empty). Override with e.g. **`AGENTMUX_AGENT_FLAGS=--force`** if you prefer that flag.
+The orchestrator auto-approves shell commands by default, so you are not blocked on a prompt for every command. How that is spelled depends on which CLI started this session:
+
+| CLI | Default flags | Override |
+| --- | --- | --- |
+| Cursor Agent | `--yolo` | `AGENTMUX_AGENT_FLAGS` |
+| Codex CLI | `--dangerously-bypass-approvals-and-sandbox` | (fixed) |
+| Claude Code | `--permission-mode bypassPermissions` | `AGENTMUX_CLAUDE_FLAGS` |
+
+Set the override to an empty string to restore per-command confirmation.

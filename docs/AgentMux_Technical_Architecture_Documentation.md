@@ -1,300 +1,125 @@
-# AgentMux
+# AgentMux Mac Technical Architecture
 
-## Multi-Agent Terminal Orchestration Platform
+## 1. Overview
 
-### Technical Architecture Documentation
+AgentMux Mac is a browser-based terminal orchestration UI for multiple tmux-backed agent sessions. It combines:
 
-------------------------------------------------------------------------
+- tmux for execution
+- Node.js + Express for the control plane
+- WebSocket for live UI updates
+- React for the desktop-like interface
+- xterm.js for terminal rendering
 
-# 1. Executive Summary
+The design separates two concerns:
 
-AgentMux is a web-based multi-agent orchestration platform built on top
-of:
+- Execution surface: real tmux panes, manual terminal input, interactive CLIs
+- Collaboration surface: event center, per-project history, file tree, file preview
 
--   WSL (Windows Subsystem for Linux)
--   tmux (Terminal Multiplexer)
--   Node.js backend (WebSocket server)
--   React frontend
--   xterm.js for terminal rendering
+## 2. Runtime Model
 
-Each tmux pane represents an independent execution agent. Agents can:
+Each project has:
 
--   Run autonomous processes
--   Execute shell commands
--   Communicate via shared state or external message bus
--   Be monitored and controlled in real time via browser
+- one project root directory
+- one or more tmux-backed terminals
+- a persisted project history
+- a per-project file tree view
+- an optional file preview pane
 
-AgentMux provides a scalable architecture for terminal-native
-multi-agent collaboration.
+Each tmux session writes output to a log file via `tmux pipe-pane`.
+The server streams log growth to the browser and uses `tmux capture-pane` for full-frame refresh on terminal switch.
 
-------------------------------------------------------------------------
+## 3. Communication Model
 
-# 2. System Goals
+### 3.1 Event Center
 
-AgentMux is designed to:
+All collaboration messages go through a server-side event center:
 
-1.  Launch and manage multiple agent panes automatically
-2.  Provide real-time streaming terminal output in browser
-3.  Allow targeted command injection per agent
-4.  Support background execution
-5.  Enable future expansion into distributed or AI-driven agent systems
+- `user_message`
+- `agent_reply`
+- `done`
+- `require_confirmation`
+- `status`
+- `terminal_input` for structured terminal-side events
 
-------------------------------------------------------------------------
+Events are:
 
-# 3. High-Level Architecture
+- appended to the project history
+- broadcast to connected clients as `bus_event`
+- optionally injected into a target terminal when routing is needed
 
-    Browser (React + xterm.js)
-            ↓ WebSocket
-    Node.js Orchestration Server (WSL)
-            ↓
-    tmux Session (Agent Layer)
-            ↓
-    Linux Processes / AI Agents / Scripts
+### 3.2 Manual Terminal Input
 
-------------------------------------------------------------------------
+Manual terminal input remains a direct execution action.
+It is intentionally not mirrored into history unless the agent explicitly emits a structured event.
 
-# 4. Core Architectural Components
+## 4. Terminal Output Flow
 
-## 4.1 Frontend Layer (React + xterm.js)
+Current implementation:
 
-Responsibilities:
+1. tmux pane output is piped into a per-terminal log file
+2. the server reads new bytes from that log file using `fs.watch` plus a short polling loop
+3. the browser receives incremental `output` messages
+4. when switching terminals, the server sends a `terminal_snapshot` based on `tmux capture-pane -p -e -J`
 
--   Render multiple agent panes visually
--   Capture keyboard input
--   Display real-time terminal output
--   Maintain UI state (active agents, status, logs)
--   Provide orchestration controls (start/stop/restart agents)
+Why this model:
 
-Each pane is represented as a React component bound to a WebSocket
-channel.
+- preserves incremental output for live UI
+- avoids replays that can corrupt alt-screen TUIs
+- keeps full terminal state available on switch
 
-Recommended libraries:
+## 5. File Tree and Preview
 
--   React
--   xterm.js
--   socket.io or ws client
--   Zustand or Redux (optional state management)
+The right panel has two modes:
 
-------------------------------------------------------------------------
+- tree only
+- tree + preview
 
-## 4.2 Backend Layer (Node.js)
+The file tree is refreshed when the project directory changes.
+The server watches each project root and emits `project_tree_changed` only on actual filesystem change.
 
-Responsibilities:
+The preview pane:
 
--   WebSocket management
--   tmux session orchestration
--   Pane lifecycle control
--   Command routing
--   Output streaming
--   Security enforcement
+- opens when a file is selected
+- shows markdown rendering for `.md`
+- shows line-numbered plain text for other files
+- refreshes when the directory watcher reports a change in the active project
 
-The backend acts as:
+## 6. Persistence
 
--   Agent command router
--   Output multiplexer
--   Session controller
+State is stored in `~/.agentmux/`:
 
-------------------------------------------------------------------------
+- `projects.json` for project/terminal state and project history
+- project-specific directories under `~/.agentmux/projects/<projectId>/`
+- terminal log files for each pane
 
-## 4.3 Execution Layer (tmux)
+The UI can be restored from disk after restart.
 
-tmux acts as the execution orchestration engine.
+## 7. Comparison With the Original AgentMux
 
-It provides:
+The original AgentMux emphasized:
 
--   Session isolation
--   Pane-level process separation
--   Background persistence
--   Precise command injection
--   Output capture and piping
+- multiple fixed roles
+- task/result markdown files
+- `worklog.md` and `project-history.md`
+- orchestration through file watching and tmux notifications
 
-Each pane = One Agent Runtime.
+AgentMux Mac emphasizes:
 
-------------------------------------------------------------------------
+- per-project collaboration history in the browser
+- a unified event bus
+- a terminal-first execution surface
+- project file browsing and preview inside the same UI
 
-# 5. Installation & Environment Setup
+The two systems share tmux-based execution, but the current version is more UI/event-driven and less dependent on task/result markdown files.
 
-## 5.1 Install tmux
+## 8. Summary
 
-sudo apt update sudo apt install tmux
+The current architecture is:
 
-Verify:
+- tmux for execution
+- file logs for durable terminal output
+- `fs.watch` for directory/file change detection
+- WebSocket events for live UI updates
+- per-project history for collaboration state
 
-tmux -V
-
-------------------------------------------------------------------------
-
-## 5.2 Install Node.js
-
-sudo apt install nodejs npm
-
-------------------------------------------------------------------------
-
-## 5.3 Install Project Dependencies
-
-npm init -y npm install ws express
-
-------------------------------------------------------------------------
-
-# 6. Backend Design
-
-## 6.1 WebSocket Message Protocol
-
-Example JSON format:
-
-    {
-      "type": "command",
-      "pane": "dev:0.1",
-      "input": "npm run start"
-    }
-
-Other message types:
-
--   create_agent
--   destroy_agent
--   list_agents
--   capture_output
--   health_check
-
-------------------------------------------------------------------------
-
-## 6.2 Command Routing
-
-Backend executes:
-
-tmux send-keys -t `<pane>`{=html} "`<command>`{=html}" Enter
-
-------------------------------------------------------------------------
-
-## 6.3 Real-Time Output Strategy
-
-### Option A: Polling (Not Recommended)
-
-tmux capture-pane -pt dev:0.1
-
-### Option B: Pipe-Based Streaming (Recommended)
-
-tmux pipe-pane -t dev:0.1 "cat \>\> /tmp/dev_0\_1.log"
-
-Node backend watches log file and streams updates via WebSocket.
-
-------------------------------------------------------------------------
-
-# 7. Agent Lifecycle Management
-
-## 7.1 Create Session
-
-tmux new-session -d -s dev -c /home/dev
-
-## 7.2 Create Panes (Agents)
-
-tmux split-window -h -t dev tmux split-window -v -t dev tmux
-split-window -v -t dev:0.0
-
-## 7.3 Attach Session
-
-tmux attach -t dev
-
-------------------------------------------------------------------------
-
-# 8. React Frontend Structure
-
-Recommended Component Structure:
-
-    /src
-     ├── App.jsx
-     ├── components
-     │     ├── AgentPane.jsx
-     │     ├── ControlPanel.jsx
-     │     └── AgentGrid.jsx
-     ├── services
-     │     └── socketService.js
-
-Each AgentPane:
-
--   Creates xterm instance
--   Binds WebSocket
--   Sends input events
--   Renders streamed output
-
-------------------------------------------------------------------------
-
-# 9. Scaling Strategy
-
-Future scalability directions:
-
--   Multi-session support
--   Distributed agent nodes
--   Kubernetes integration
--   Message bus (Redis / NATS)
--   Agent-to-agent communication protocol
--   AI task routing layer
-
-------------------------------------------------------------------------
-
-# 10. Security Considerations
-
-Critical controls:
-
-1.  Authentication (JWT / OAuth)
-2.  Role-based access control
-3.  Command validation layer
-4.  Rate limiting
-5.  Audit logging
-6.  TLS encryption
-
-Never expose raw shell without authentication.
-
-------------------------------------------------------------------------
-
-# 11. Failure Handling
-
-Recommended mechanisms:
-
--   Agent heartbeat monitoring
--   Auto-restart on failure
--   Log retention
--   Graceful shutdown handling
--   Session recovery
-
-------------------------------------------------------------------------
-
-# 12. Performance Considerations
-
--   Avoid excessive capture-pane polling
--   Use streaming pipe model
--   Debounce UI updates
--   Limit max panes per session
--   Monitor CPU usage of agents
-
-------------------------------------------------------------------------
-
-# 13. Future Evolution Roadmap
-
-Phase 1: Basic multi-pane control
-
-Phase 2: Agent metadata & orchestration dashboard
-
-Phase 3: AI-native agents with memory & task planning
-
-Phase 4: Distributed multi-node agent mesh
-
-------------------------------------------------------------------------
-
-# 14. Conclusion
-
-AgentMux transforms tmux into a structured multi-agent runtime platform.
-
-By combining:
-
--   Terminal-native execution
--   Web-based monitoring
--   Real-time command routing
--   Scalable backend orchestration
-
-AgentMux becomes a foundation for advanced multi-agent collaboration
-systems.
-
-------------------------------------------------------------------------
-
-End of Document
+This keeps manual terminal use intact while making collaborative messages and project state consistent across the UI.
