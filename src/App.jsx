@@ -64,6 +64,22 @@ const I18N = {
     fileTreeTitle: "File tree",
     referenceDir: "Reference directory",
     mainRoot: "Main",
+    agentLabel: "Agent {n}",
+    rootCwd: "Current Workspace",
+    rootHome: "Home",
+    rootProjects: "Projects",
+    eventSource: "Event",
+    eventFromYou: "You",
+    evUserMessage: "User",
+    evAgentReply: "Reply",
+    evDone: "Done",
+    evRequireConfirmation: "Confirm",
+    evStatus: "Status",
+    evTerminalInput: "Terminal input",
+    modelCurrent: "Current",
+    modelDefault: "Default",
+    modelNoteCodex: "Codex model list is fixed from the available Codex models shown in the CLI picker.",
+    modelNoteClaude: "Claude aliases track the latest release; type a full model id to pin a snapshot.",
     linkDirectory: "Link directory",
     removeLinkedRoot: "Remove linked directory",
     selectProjectFolder: "Select project folder",
@@ -162,6 +178,22 @@ const I18N = {
     fileTreeTitle: "文件树",
     referenceDir: "引用目录",
     mainRoot: "主目录",
+    agentLabel: "终端 {n}",
+    rootCwd: "当前工作区",
+    rootHome: "用户目录",
+    rootProjects: "项目目录",
+    eventSource: "事件",
+    eventFromYou: "你",
+    evUserMessage: "用户",
+    evAgentReply: "回复",
+    evDone: "完成",
+    evRequireConfirmation: "确认",
+    evStatus: "状态",
+    evTerminalInput: "终端输入",
+    modelCurrent: "当前",
+    modelDefault: "默认",
+    modelNoteCodex: "Codex 的模型列表是固定的，取自 CLI 选择器里可用的模型。",
+    modelNoteClaude: "Claude 别名会自动跟随最新版本；要锁定某个具体快照，直接输入完整的模型 id。",
     linkDirectory: "关联目录",
     removeLinkedRoot: "移除引用目录",
     selectProjectFolder: "选择项目文件夹",
@@ -234,6 +266,13 @@ function defaultAppSettings() {
     model: "auto",
   };
 }
+
+/** Picker root id -> dictionary key; unknown ids fall back to the server label. */
+const PICKER_ROOT_KEYS = {
+  cwd: "rootCwd",
+  home: "rootHome",
+  projects: "rootProjects",
+};
 
 /** Keep in sync with server/providers/index.js. */
 const PROVIDER_IDS = ["cursor", "codex", "claude"];
@@ -377,49 +416,59 @@ function summarizeEvent(event) {
   return "";
 }
 
-function formatEventOrigin(event, project) {
-  if (!event || typeof event !== "object") return "事件";
-  if (event.from === "browser") return "你";
+/**
+ * Terminal labels are assigned by the server ("Agent 3") and persisted, so the
+ * stored value is an English string. Translate that default on the way out,
+ * but leave anything the operator renamed exactly as they typed it.
+ *
+ * @param {{ label?: string }} terminal
+ * @param {(key: string, vars?: object) => string} t
+ */
+function terminalLabel(terminal, t) {
+  const label = String(terminal?.label ?? "");
+  const match = /^Agent (\d+)$/.exec(label);
+  return match ? t("agentLabel", { n: match[1] }) : label;
+}
+
+function formatEventOrigin(event, project, t) {
+  if (!event || typeof event !== "object") return t("eventSource");
+  if (event.from === "browser") return t("eventFromYou");
   if (project && typeof event.from === "string") {
     const match = project.terminals?.find(
       (terminal) => terminal.tmuxSession === event.from || terminal.id === event.from,
     );
-    if (match?.label) return match.label;
+    if (match?.label) return terminalLabel(match, t);
   }
   if (typeof event.from === "string" && event.from.trim()) return event.from;
-  return "事件";
+  return t("eventSource");
 }
 
-function formatEventTarget(event, project) {
+function formatEventTarget(event, project, t) {
   if (!event || typeof event !== "object") return "";
   if (project && typeof event.to === "string") {
     const match = project.terminals?.find(
       (terminal) => terminal.tmuxSession === event.to || terminal.id === event.to,
     );
-    if (match?.label) return match.label;
+    if (match?.label) return terminalLabel(match, t);
   }
   if (typeof event.to === "string" && event.to.trim()) return event.to;
   return "";
 }
 
-function formatEventKind(event, lang = "en") {
+/** Event type -> dictionary key. Unlisted types fall through to the raw type. */
+const EVENT_KIND_KEYS = {
+  user_message: "evUserMessage",
+  agent_reply: "evAgentReply",
+  done: "evDone",
+  require_confirmation: "evRequireConfirmation",
+  status: "evStatus",
+  terminal_input: "evTerminalInput",
+};
+
+function formatEventKind(event, t) {
   const type = typeof event?.type === "string" ? event.type : "event";
-  switch (type) {
-    case "user_message":
-      return lang === "zh" ? "用户" : "User";
-    case "agent_reply":
-      return lang === "zh" ? "回复" : "Reply";
-    case "done":
-      return lang === "zh" ? "完成" : "Done";
-    case "require_confirmation":
-      return lang === "zh" ? "确认" : "Confirm";
-    case "status":
-      return lang === "zh" ? "状态" : "Status";
-    case "terminal_input":
-      return lang === "zh" ? "终端输入" : "Terminal input";
-    default:
-      return type;
-  }
+  const key = EVENT_KIND_KEYS[type];
+  return key ? t(key) : type;
 }
 
 function getEventDetail(event) {
@@ -937,7 +986,7 @@ function DirectoryPickerModal({
               className={`root-chip ${currentPath?.startsWith(root.path) ? "active" : ""}`}
               onClick={() => onOpenPath(root.path)}
             >
-              {root.label}
+              {PICKER_ROOT_KEYS[root.id] ? t(PICKER_ROOT_KEYS[root.id]) : root.label}
             </button>
           ))}
         </div>
@@ -1108,7 +1157,7 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [modelOptions, setModelOptions] = useState([]);
   const [modelOptionsLoading, setModelOptionsLoading] = useState(false);
-  const [modelOptionsNote, setModelOptionsNote] = useState("");
+  const [modelOptionsNoteKey, setModelOptionsNoteKey] = useState("");
   const [providerOptions, setProviderOptions] = useState([]);
   const [providerOptionsLoading, setProviderOptionsLoading] = useState(false);
   const modelOptionsCacheRef = useRef(new Map());
@@ -1216,7 +1265,7 @@ export default function App() {
     const cached = modelOptionsCacheRef.current.get(cli);
     if (cached) {
       setModelOptions(cached.models || []);
-      setModelOptionsNote(cached.note || "");
+      setModelOptionsNoteKey(cached.noteKey || "");
       setModelOptionsLoading(false);
       return;
     }
@@ -1230,10 +1279,10 @@ export default function App() {
         throw new Error(json.error || response.statusText);
       }
       setModelOptions(Array.isArray(json.models) ? json.models : []);
-      setModelOptionsNote(json.note || "");
+      setModelOptionsNoteKey(json.noteKey || "");
       modelOptionsCacheRef.current.set(cli, {
         models: Array.isArray(json.models) ? json.models : [],
-        note: json.note || "",
+        noteKey: json.noteKey || "",
       });
       if (json.defaultModel && !appSettings.model) {
         setAppSettings((prev) => ({
@@ -1243,7 +1292,7 @@ export default function App() {
       }
     } catch {
       setModelOptions([]);
-      setModelOptionsNote("");
+      setModelOptionsNoteKey("");
     } finally {
       setModelOptionsLoading(false);
       modelOptionsRequestRef.current = "";
@@ -1768,7 +1817,7 @@ export default function App() {
           }));
           setActiveProjectId(message.projectId);
           setActiveTerminalId(message.terminal.id);
-          setStatus(t("createdTerminal", { label: message.terminal.label }));
+          setStatus(t("createdTerminal", { label: terminalLabel(message.terminal, t) }));
           break;
         }
         case "project_root_added": {
@@ -2316,7 +2365,7 @@ export default function App() {
                                         />
                                       ) : (
                                         <span className="thread-label">
-                                          {terminal.label}
+                                          {terminalLabel(terminal, t)}
                                         </span>
                                       )}
                                     </div>
@@ -2329,7 +2378,7 @@ export default function App() {
                                           event.stopPropagation();
                                           if (
                                             !window.confirm(
-                                              t("confirmCloseTerminal", { label: terminal.label }),
+                                              t("confirmCloseTerminal", { label: terminalLabel(terminal, t) }),
                                             )
                                           ) {
                                             return;
@@ -2399,7 +2448,7 @@ export default function App() {
                   ) : null}
                   <div className="terminal-title">
                     {activeTerminal
-                      ? `${activeTerminal.projectName} / ${activeTerminal.label}`
+                      ? `${activeTerminal.projectName} / ${terminalLabel(activeTerminal, t)}`
                       : t("appName")}
                   </div>
                 </div>
@@ -2475,14 +2524,14 @@ export default function App() {
                                 >
                                   <div className="history-meta">
                                     <span className="history-origin">
-                                      {formatEventOrigin(event, activeProject)}
+                                      {formatEventOrigin(event, activeProject, t)}
                                     </span>
                                     <span className="history-type">
-                                      {formatEventKind(event)}
+                                      {formatEventKind(event, t)}
                                     </span>
-                                    {formatEventTarget(event, activeProject) ? (
+                                    {formatEventTarget(event, activeProject, t) ? (
                                       <span className="history-target">
-                                        {"→"} {formatEventTarget(event, activeProject)}
+                                        {"→"} {formatEventTarget(event, activeProject, t)}
                                       </span>
                                     ) : null}
                                   </div>
@@ -2840,12 +2889,12 @@ export default function App() {
                             onClick={() => saveSettings({ model: model.id })}
                           >
                             <span className="settings-select-name">{model.label}</span>
-                            {model.current ? <span className="settings-select-tag">{lang === "zh" ? "当前" : "Current"}</span> : null}
-                            {model.default ? <span className="settings-select-tag">{lang === "zh" ? "默认" : "Default"}</span> : null}
+                            {model.current ? <span className="settings-select-tag">{t("modelCurrent")}</span> : null}
+                            {model.default ? <span className="settings-select-tag">{t("modelDefault")}</span> : null}
                           </button>
                         ))
                       )}
-                      {modelOptionsNote ? <div className="settings-note">{modelOptionsNote}</div> : null}
+                      {modelOptionsNoteKey ? <div className="settings-note">{t(modelOptionsNoteKey)}</div> : null}
                     </div>
                   ) : (
                     <div className="settings-model-list codex-list" role="listbox" aria-label={t("defaultModel")}>
@@ -2860,12 +2909,12 @@ export default function App() {
                             onClick={() => saveSettings({ model: model.id })}
                           >
                             <span className="settings-select-name">{model.label}</span>
-                            {model.current ? <span className="settings-select-tag">{lang === "zh" ? "当前" : "Current"}</span> : null}
-                            {model.default ? <span className="settings-select-tag">{lang === "zh" ? "默认" : "Default"}</span> : null}
+                            {model.current ? <span className="settings-select-tag">{t("modelCurrent")}</span> : null}
+                            {model.default ? <span className="settings-select-tag">{t("modelDefault")}</span> : null}
                           </button>
                         ))
                       )}
-                      {modelOptionsNote ? <div className="settings-note">{modelOptionsNote}</div> : null}
+                      {modelOptionsNoteKey ? <div className="settings-note">{t(modelOptionsNoteKey)}</div> : null}
                     </div>
                   )}
                 </div>

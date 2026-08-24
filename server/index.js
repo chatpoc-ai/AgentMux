@@ -92,6 +92,16 @@ function resolveProjectPath(root, requested = "") {
   return abs;
 }
 
+/**
+ * Stored label for a project's main root.
+ *
+ * Persisted, so it must not be localized: the UI renders `kind === "main"`
+ * through its own dictionary and never shows this string. It previously held
+ * a hardcoded Chinese literal, which surfaced verbatim for English users
+ * anywhere the label was read directly.
+ */
+const DEFAULT_MAIN_ROOT_LABEL = "Main";
+
 function makeProjectRoot(id, label, absPath, kind = "linked") {
   return {
     id,
@@ -202,10 +212,15 @@ function sanitizeHistoryEntries(entries) {
   );
 }
 
-/** Explains to the UI why a provider's model list looks the way it does. */
-const MODEL_LIST_NOTES = {
-  codex: "Codex model list is fixed from the available Codex models shown in the CLI picker.",
-  claude: "Claude aliases track the latest release; type a full model id to pin a snapshot.",
+/**
+ * Explains to the UI why a provider's model list looks the way it does.
+ *
+ * Dictionary keys rather than prose: the UI is bilingual and the server has no
+ * business picking the operator's language.
+ */
+const MODEL_LIST_NOTE_KEYS = {
+  codex: "modelNoteCodex",
+  claude: "modelNoteClaude",
 };
 
 function getProviderDefaultModel(cli) {
@@ -287,7 +302,7 @@ class ProjectSession {
     /** @type {TerminalSession[]} */
     this.terminals = [];
     /** @type {Array<{id:string,label:string,path:string,kind:string}>} */
-    this.roots = [makeProjectRoot("main", "主目录", cwd, "main")];
+    this.roots = [makeProjectRoot("main", DEFAULT_MAIN_ROOT_LABEL, cwd, "main")];
     /** @type {Array<object>} */
     this.history = [];
   }
@@ -427,9 +442,9 @@ class AgentMuxServer {
                 root.kind || "linked",
               ),
             )
-        : [makeProjectRoot("main", "主目录", project.cwd, "main")];
+        : [makeProjectRoot("main", DEFAULT_MAIN_ROOT_LABEL, project.cwd, "main")];
       if (!project.roots.some((root) => root.kind === "main")) {
-        project.roots.unshift(makeProjectRoot("main", "主目录", project.cwd, "main"));
+        project.roots.unshift(makeProjectRoot("main", DEFAULT_MAIN_ROOT_LABEL, project.cwd, "main"));
       }
 
       for (const termEntry of entry.terminals || []) {
@@ -1341,7 +1356,7 @@ app.get("/api/settings/model-options", (req, res) => {
     supported: true,
     defaultModel: provider.defaultModel,
     models: listModelOptions(cli),
-    note: MODEL_LIST_NOTES[cli] || "",
+    noteKey: MODEL_LIST_NOTE_KEYS[cli] || "",
   });
 });
 
