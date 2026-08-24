@@ -293,6 +293,10 @@ function defaultAppSettings() {
 const MODEL_CHIP_LIMIT = 12;
 
 /** WebSocket reconnect backoff: first retry after this, doubling up to the cap. */
+/** Bounds for the auto-growing composer, in px. */
+const COMPOSER_MIN_HEIGHT = 44;
+const COMPOSER_MAX_HEIGHT = 200;
+
 const RECONNECT_BASE_MS = 800;
 const RECONNECT_MAX_MS = 15000;
 
@@ -1167,6 +1171,7 @@ export default function App() {
   const [sidebarWidth, setSidebarWidth] = useState(320);
   const [sidebarVisible, setSidebarVisible] = useState(true);
   const [newTerminalDialog, setNewTerminalDialog] = useState(null);
+  const composerInputRef = useRef(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerRoots, setPickerRoots] = useState([]);
   const [pickerPath, setPickerPath] = useState("");
@@ -1426,6 +1431,52 @@ export default function App() {
       JSON.stringify({ type: "subscribe_terminal", terminalId: activeTerminalId || null }),
     );
   }, [activeTerminalId, connectionState]);
+
+  /**
+   * Size the composer to its content: one line when empty, growing as the
+   * draft does, and scrolling internally once it would take too much of the
+   * panel. CSS alone cannot do this for a textarea — the height has to be
+   * measured from scrollHeight.
+   */
+  const resizeComposer = useEffectEvent(() => {
+    const el = composerInputRef.current;
+    if (!el) return;
+    // Collapse before measuring. Reading scrollHeight at height:auto reports
+    // the element's current box when that exceeds the text, so an empty
+    // composer would keep whatever height it last had.
+    el.style.height = "0px";
+    const content = el.scrollHeight;
+    // Cap against the panel so a short panel keeps room for history. Computed
+    // here rather than as a CSS percentage: a percentage resolves against a
+    // parent this element sizes, which feeds back and runs away.
+    const shell = composerShellRef.current;
+    const cap = Math.max(
+      COMPOSER_MIN_HEIGHT,
+      Math.min(COMPOSER_MAX_HEIGHT, Math.round((shell?.clientHeight || 320) * 0.4)),
+    );
+    el.style.height = `${Math.max(COMPOSER_MIN_HEIGHT, Math.min(content, cap))}px`;
+  });
+
+  useEffect(() => {
+    resizeComposer();
+  }, [composerText, resizeComposer]);
+
+  // The first pass runs before layout has settled, and the cap depends on the
+  // panel's height, which the operator can drag. Re-measure whenever the shell
+  // changes size, and once more after the first frame.
+  useEffect(() => {
+    const shell = composerShellRef.current;
+    const frame = requestAnimationFrame(() => resizeComposer());
+    if (!shell || typeof ResizeObserver === "undefined") {
+      return () => cancelAnimationFrame(frame);
+    }
+    const observer = new ResizeObserver(() => resizeComposer());
+    observer.observe(shell);
+    return () => {
+      cancelAnimationFrame(frame);
+      observer.disconnect();
+    };
+  }, [resizeComposer]);
 
   useEffect(() => {
     window.localStorage.setItem(
@@ -2648,7 +2699,12 @@ export default function App() {
               >
                 <div className="bottom-panel-grid simple">
                   <section className="bottom-card composer-card">
+                    {/* The form is a layout link, not just a wrapper: unstyled
+                        it is a display:block box with min-height:auto, which
+                        grows to the history's full height and breaks the chain
+                        that keeps the composer pinned and the history scrolling. */}
                     <form
+                      className="composer-form"
                       onSubmit={(event) => {
                         event.preventDefault();
                         sendComposer();
@@ -2707,6 +2763,8 @@ export default function App() {
                         </div>
                         <textarea
                           id="composer-input"
+                          ref={composerInputRef}
+                          rows={1}
                           className="composer-input"
                           value={composerText}
                           onChange={(event) => setComposerText(event.target.value)}

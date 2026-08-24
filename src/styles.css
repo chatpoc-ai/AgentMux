@@ -729,9 +729,14 @@ body.is-resizing .terminal-bottom-resizer {
   min-height: 0;
   display: grid;
   grid-template-columns: 1fr;
+  /* A grid row defaults to max-content, so without minmax(0, …) it grows to
+     whatever the history contains and pushes the composer out of view. The
+     history is the scroll container here; this must not be one, or scrolling
+     up carries the input away with it. */
+  grid-template-rows: minmax(0, 1fr);
   gap: 12px;
   padding: 12px;
-  overflow: auto;
+  overflow: hidden;
 }
 
 .bottom-panel-grid.simple {
@@ -752,9 +757,20 @@ body.is-resizing .terminal-bottom-resizer {
   flex: 1;
 }
 
-.composer-shell {
-  height: 100%;
+.composer-form {
+  flex: 1;
   min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.composer-shell {
+  /* flex:1 rather than height:100%. The percentage resolved against a parent
+     without a definite height and collapsed to content size, which left the
+     history unable to scroll and the composer floating mid-panel. */
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -880,9 +896,12 @@ body.is-resizing .terminal-bottom-resizer {
 
 .composer-input {
   flex: none;
-  min-height: 0;
+  /* Height is driven by content (see autoGrow in App.jsx): one line when
+     empty, growing with the text, scrolling internally past the cap so the
+     history never gets squeezed out by a long draft. */
+  min-height: 44px;
   width: 100%;
-  height: 132px;
+  height: auto;
   box-sizing: border-box;
   resize: none;
   border: 0;
