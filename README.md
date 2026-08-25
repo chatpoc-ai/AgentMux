@@ -13,35 +13,64 @@ Cursor, all working in the same repo.
 
 ## Why run more than one
 
-**Two flat subscriptions cost less than one metered seat.** Claude Code comes
-with Claude Pro at [$20/month](https://claude.com/pricing); Codex comes with
-ChatGPT Plus at [$20/month](https://learn.chatgpt.com/docs/pricing). In Cursor,
-third-party models like Claude and GPT are billed from a separate pool
-"charged at the model's API price", and Cursor's own docs put daily agent users
-at [$60–100/month in usage](https://cursor.com/docs/account/pricing) on top of
-the seat. Forty dollars, fixed, against twenty plus a number that moves.
+### The cost is a ceiling, not a meter
 
-Metered billing also makes the bill depend on how many tokens the tool sends,
-not just which model answers — two tools pointed at the same model can cost
-very different amounts for the same task. Cursor's own models are close to free
-per request; a single agent session on a frontier model can consume a
-double-digit dollar amount of the allowance, and the allowance is money already
-paid. Running out of it does not change what was spent, only when it is felt.
-One
-[public comparison](https://www.futureproofing.dev/resources/ai-native-team/claude-code-vs-cursor-token-efficiency-2026)
+| | Monthly | Once the allowance is gone |
+|---|---|---|
+| [Claude Pro](https://claude.com/pricing) — includes Claude Code | $20 | Rate limited until the window resets |
+| [ChatGPT Plus](https://learn.chatgpt.com/docs/pricing) — includes Codex | $20 | Rate limited until the window resets |
+| [Cursor Pro](https://cursor.com/docs/account/pricing) | $20 | Keeps going, billed at the model's API price |
+
+The two CLIs stop; the metered seat keeps spending. Cursor's own
+documentation puts daily agent users at **$60–100/month in usage** on top of
+the seat.
+
+That difference survives moving upmarket, which is the part that matters for
+anyone doing this seriously:
+
+| Setup | Monthly | Shape |
+|---|---|---|
+| Claude Pro + ChatGPT Plus | $40 | Fixed |
+| Claude Max + ChatGPT Plus | from $120 | Fixed |
+| Claude Max + ChatGPT Pro | from $200 | Fixed |
+| Cursor Pro, agent work on frontier models | $20 + usage | Open-ended |
+
+Two hundred dollars of subscriptions is a lot of capacity, and it is a number
+you know before the month starts rather than after it ends.
+
+### The bill depends on the tool, not only the model
+
+Metered billing charges for tokens sent, so the same model can cost very
+different amounts depending on which harness is feeding it. Cursor splits this
+across two pools — its own models, and third-party models "charged at the
+model's API price" — and agent work on a frontier model lands in the second
+one, where a single session can consume a double-digit dollar amount of the
+allowance. The allowance is money already paid; running out of it changes when
+that is felt, not what was spent.
+
+There is also nothing to check. A metered bill turns on a token count produced
+by the tool being billed for, which you cannot verify from outside. A fixed
+subscription has nothing to verify.
+
+One [public comparison](https://www.futureproofing.dev/resources/ai-native-team/claude-code-vs-cursor-token-efficiency-2026)
 of the same Next.js build measured 33K tokens through Claude Code against 188K
 through Cursor Agent. Read it with the caveats its authors give: a single
 untimed test, and one that mixes the models with the tools, since the two sides
 ran on Opus and GPT-5 respectively.
 
-**A limit on one is not a limit on all.** Both subscriptions meter in rolling
-windows with weekly caps — Codex prints its own remaining budget in its status
-line. With a second CLI already running in the next pane, hitting a window
-means switching panes rather than stopping.
+### A limit on one is not a limit on all
 
-**The models are not interchangeable.** Having them side by side in one repo
-lets you put each on what it is good at, and get a second opinion on anything
-you are unsure about, without re-explaining the project.
+Both subscriptions meter in rolling windows with weekly caps — Codex prints its
+own remaining budget in its status line. With a second CLI already running in
+the next pane, hitting a window means switching panes rather than stopping.
+
+### The models are not interchangeable
+
+Having them side by side in one repo lets you put each on what it is good at,
+and get a second opinion on anything you are unsure about, without
+re-explaining the project.
+
+---
 
 None of that needs this app — two tmux windows would do. What gets hard is
 watching them: terminals are unreadable on a phone, and with several panes

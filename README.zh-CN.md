@@ -8,13 +8,44 @@
 
 ## 为什么要同时跑多个
 
-**两份固定订阅比一份按量计费更便宜。** Claude Code 包含在 Claude Pro 里，[每月 $20](https://claude.com/pricing)；Codex 包含在 ChatGPT Plus 里，[每月 $20](https://learn.chatgpt.com/docs/pricing)。而在 Cursor 里，Claude、GPT 这类第三方模型从独立的额度池扣费，按"模型的 API 原价"计费，Cursor 自己的文档写着每日重度 agent 用户的用量花费是[每月 $60–100](https://cursor.com/docs/account/pricing)，这还不含席位费。四十美元封顶，对二十美元加一个会浮动的数。
+### 成本是一个上限，不是一个计价器
 
-按量计费还意味着账单取决于**工具发出多少 token**，而不只取决于哪个模型在回答——两个工具指向同一个模型，同样的任务花费可能相差很大。Cursor 自家模型每次请求几乎不要钱；而前沿模型跑一次 agent 会话，可以吃掉两位数美元的额度——**而额度是已经付过的钱**。用完额度只是决定你什么时候感觉到痛，不改变钱已经花出去这件事。有一次[公开对比](https://www.futureproofing.dev/resources/ai-native-team/claude-code-vs-cursor-token-efficiency-2026)在同一个 Next.js 项目上测得：Claude Code 用了 33K token，Cursor Agent 用了 188K。请连同原作者的保留一起看——那是单次非受控测试，而且两边分别跑在 Opus 和 GPT-5 上，模型差异和工具差异混在一起。
+| | 月费 | 额度用完之后 |
+|---|---|---|
+| [Claude Pro](https://claude.com/pricing) —— 含 Claude Code | $20 | 限流，等窗口重置 |
+| [ChatGPT Plus](https://learn.chatgpt.com/docs/pricing) —— 含 Codex | $20 | 限流，等窗口重置 |
+| [Cursor Pro](https://cursor.com/docs/account/pricing) | $20 | 继续用，按模型的 API 原价计费 |
 
-**一边被限流不等于全部停摆。** 两家订阅都按滚动窗口计量并有周配额——Codex 会把自己的剩余额度直接打在状态栏上。旁边那个 pane 里已经跑着另一个 CLI，撞到窗口时只是换个 pane，而不是停下来。
+两个 CLI 会停下来，按量计费的席位会继续花钱。Cursor 自己的文档写着，每日重度 agent 用户的用量花费是**每月 $60–100**，这还在席位费之外。
 
-**模型之间并不等价。** 让它们并排待在同一个仓库里，就能各自做擅长的事；拿不准的问题可以换一个再问一遍，不用重新交代项目背景。
+往上升级时这个差别依然成立，而这才是认真用的人真正在意的部分：
+
+| 组合 | 月费 | 性质 |
+|---|---|---|
+| Claude Pro + ChatGPT Plus | $40 | 固定 |
+| Claude Max + ChatGPT Plus | $120 起 | 固定 |
+| Claude Max + ChatGPT Pro | $200 起 | 固定 |
+| Cursor Pro，用前沿模型做 agent 工作 | $20 + 用量 | 无上限 |
+
+两百美元的订阅是很大的产能，而且这个数字**你在月初就知道，不用等月底**。
+
+### 账单取决于工具，不只取决于模型
+
+按量计费是按发出去的 token 收钱，所以同一个模型在不同的外壳里跑，花费可能天差地别。Cursor 把这件事分成两个额度池——自家模型，和按"模型的 API 原价"计费的第三方模型——而用前沿模型做 agent 工作落在后一个池子里，**一次会话就能吃掉两位数美元的额度**。额度是已经付过的钱；用完它只是决定你什么时候感觉到痛，不改变钱已经花出去这件事。
+
+而且这件事**没有东西可以核对**。按量账单取决于一个 token 计数，而这个计数由被计费的那个工具自己产出，你从外部无法验证。固定订阅则没有需要验证的东西。
+
+有一次[公开对比](https://www.futureproofing.dev/resources/ai-native-team/claude-code-vs-cursor-token-efficiency-2026)在同一个 Next.js 项目上测得：Claude Code 用了 33K token，Cursor Agent 用了 188K。请连同原作者的保留一起看——那是单次非受控测试，而且两边分别跑在 Opus 和 GPT-5 上，模型差异和工具差异混在一起。
+
+### 一边被限流不等于全部停摆
+
+两家订阅都按滚动窗口计量并有周配额——Codex 会把自己的剩余额度直接打在状态栏上。旁边那个 pane 里已经跑着另一个 CLI，撞到窗口时只是换个 pane，而不是停下来。
+
+### 模型之间并不等价
+
+让它们并排待在同一个仓库里，就能各自做擅长的事；拿不准的问题可以换一个再问一遍，不用重新交代项目背景。
+
+---
 
 这些都不需要这个应用——开两个 tmux 窗口一样能做。真正麻烦的是**盯着它们**：终端在手机上没法读，几个 pane 一起跑之后，谁在干活、谁在等你、各自做过什么，都不再一目了然。AgentMux 解决的是这一部分。
 
