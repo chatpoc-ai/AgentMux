@@ -10,7 +10,7 @@
 
 **两份固定订阅比一份按量计费更便宜。** Claude Code 包含在 Claude Pro 里，[每月 $20](https://claude.com/pricing)；Codex 包含在 ChatGPT Plus 里，[每月 $20](https://learn.chatgpt.com/docs/pricing)。而在 Cursor 里，Claude、GPT 这类第三方模型从独立的额度池扣费，按"模型的 API 原价"计费，Cursor 自己的文档写着每日重度 agent 用户的用量花费是[每月 $60–100](https://cursor.com/docs/account/pricing)，这还不含席位费。四十美元封顶，对二十美元加一个会浮动的数。
 
-按量计费还意味着账单取决于**工具发出多少 token**，而不只取决于哪个模型在回答——两个工具指向同一个模型，同样的任务花费可能相差很大。有一次[公开对比](https://www.futureproofing.dev/resources/ai-native-team/claude-code-vs-cursor-token-efficiency-2026)在同一个 Next.js 项目上测得：Claude Code 用了 33K token，Cursor Agent 用了 188K。请连同原作者的保留一起看——那是单次非受控测试，而且两边分别跑在 Opus 和 GPT-5 上，模型差异和工具差异混在一起。
+按量计费还意味着账单取决于**工具发出多少 token**，而不只取决于哪个模型在回答——两个工具指向同一个模型，同样的任务花费可能相差很大。Cursor 自家模型每次请求几乎不要钱；而前沿模型跑一次 agent 会话，可以吃掉两位数美元的额度——**而额度是已经付过的钱**。用完额度只是决定你什么时候感觉到痛，不改变钱已经花出去这件事。有一次[公开对比](https://www.futureproofing.dev/resources/ai-native-team/claude-code-vs-cursor-token-efficiency-2026)在同一个 Next.js 项目上测得：Claude Code 用了 33K token，Cursor Agent 用了 188K。请连同原作者的保留一起看——那是单次非受控测试，而且两边分别跑在 Opus 和 GPT-5 上，模型差异和工具差异混在一起。
 
 **一边被限流不等于全部停摆。** 两家订阅都按滚动窗口计量并有周配额——Codex 会把自己的剩余额度直接打在状态栏上。旁边那个 pane 里已经跑着另一个 CLI，撞到窗口时只是换个 pane，而不是停下来。
 

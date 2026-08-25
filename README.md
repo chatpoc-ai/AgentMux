@@ -23,7 +23,11 @@ the seat. Forty dollars, fixed, against twenty plus a number that moves.
 
 Metered billing also makes the bill depend on how many tokens the tool sends,
 not just which model answers — two tools pointed at the same model can cost
-very different amounts for the same task. One
+very different amounts for the same task. Cursor's own models are close to free
+per request; a single agent session on a frontier model can consume a
+double-digit dollar amount of the allowance, and the allowance is money already
+paid. Running out of it does not change what was spent, only when it is felt.
+One
 [public comparison](https://www.futureproofing.dev/resources/ai-native-team/claude-code-vs-cursor-token-efficiency-2026)
 of the same Next.js build measured 33K tokens through Claude Code against 188K
 through Cursor Agent. Read it with the caveats its authors give: a single
