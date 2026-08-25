@@ -2472,6 +2472,10 @@ export default function App() {
       terminalId: activeTerminalId,
     });
     setComposerText("");
+    // Sending is a deliberate move to the present, so it re-arms the follow
+    // even if the reader had scrolled up: their own message, and the reply to
+    // it, are what they now want to see.
+    scrollHistoryToBottom();
     // Keep the caret here so a follow-up message can be typed straight away.
     // Sending requests a snapshot, and the terminal used to take focus when it
     // arrived; the guard above stops that, this makes the intent explicit.
