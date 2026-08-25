@@ -22,8 +22,15 @@ body {
 }
 
 body.is-resizing {
-  cursor: col-resize;
   user-select: none;
+}
+
+body.is-resizing-col {
+  cursor: col-resize;
+}
+
+body.is-resizing-row {
+  cursor: row-resize;
 }
 
 button,
@@ -696,13 +703,15 @@ body.is-resizing .files-resizer {
   position: relative;
 }
 
+/* The visible line is 1px; this widens what the pointer can actually grab. */
 .terminal-bottom-resizer::after {
   content: "";
   position: absolute;
   left: 0;
   right: 0;
-  top: -6px;
-  bottom: -6px;
+  top: -8px;
+  bottom: -8px;
+  cursor: row-resize;
 }
 
 .terminal-bottom-resizer:hover,
@@ -729,9 +738,14 @@ body.is-resizing .terminal-bottom-resizer {
   min-height: 0;
   display: grid;
   grid-template-columns: 1fr;
+  /* A grid row defaults to max-content, so without minmax(0, …) it grows to
+     whatever the history contains and pushes the composer out of view. The
+     history is the scroll container here; this must not be one, or scrolling
+     up carries the input away with it. */
+  grid-template-rows: minmax(0, 1fr);
   gap: 12px;
   padding: 12px;
-  overflow: auto;
+  overflow: hidden;
 }
 
 .bottom-panel-grid.simple {
@@ -752,9 +766,58 @@ body.is-resizing .terminal-bottom-resizer {
   flex: 1;
 }
 
-.composer-shell {
-  height: 100%;
+/* Reads as a field rather than as more of the transcript: the history above
+   sits on the panel's own background, so the composer needs its own. */
+.history-jump {
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+  padding: 5px 12px;
+  border: 1px solid rgba(34, 38, 48, 0.1);
+  border-radius: 999px;
+  background: #ffffff;
+  color: #4b5563;
+  font-size: 0.8rem;
+  font-weight: 600;
+  box-shadow: 0 2px 8px rgba(34, 38, 48, 0.08);
+}
+
+.history-jump:hover {
+  background: #1f232a;
+  color: #ffffff;
+  border-color: transparent;
+}
+
+.composer-field {
+  position: relative;
+  flex: none;
+  display: flex;
+  border: 1px solid rgba(34, 38, 48, 0.1);
+  border-radius: 16px;
+  background: #ffffff;
+  transition: border-color 120ms ease;
+}
+
+.composer-field:focus-within {
+  border-color: rgba(34, 38, 48, 0.24);
+}
+
+.composer-form {
+  flex: 1;
   min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.composer-shell {
+  /* flex:1 rather than height:100%. The percentage resolved against a parent
+     without a definite height and collapsed to content size, which left the
+     history unable to scroll and the composer floating mid-panel. */
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -880,14 +943,18 @@ body.is-resizing .terminal-bottom-resizer {
 
 .composer-input {
   flex: none;
-  min-height: 0;
+  /* Height is driven by content (see autoGrow in App.jsx): one line when
+     empty, growing with the text, scrolling internally past the cap so the
+     history never gets squeezed out by a long draft. */
+  min-height: 44px;
   width: 100%;
-  height: 132px;
+  height: auto;
   box-sizing: border-box;
   resize: none;
   border: 0;
   border-radius: 16px;
-  padding: 12px 12px 10px;
+  /* Right padding keeps the text clear of the send button inside the field. */
+  padding: 12px 48px 10px 12px;
   background: transparent;
   color: #232833;
   font-size: 1rem;
@@ -924,34 +991,38 @@ body.is-resizing .terminal-bottom-resizer {
   text-overflow: ellipsis;
 }
 
-.composer-toolbar {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-  color: #717784;
-}
-
+/* Sits inside the field, pinned to the bottom-right so it stays put as the
+   textarea grows. */
 .composer-send {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  border-radius: 999px;
-  padding: 9px 12px;
-  background: rgba(34, 38, 48, 0.05);
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  border-radius: 10px;
+  background: rgba(34, 38, 48, 0.06);
   color: #6f7581;
-  font-size: 0.92rem;
-  font-weight: 600;
+  transition: background-color 120ms ease, color 120ms ease, opacity 120ms ease;
 }
 
-.composer-send {
-  margin-left: auto;
+.composer-send svg {
+  width: 17px;
+  height: 17px;
+}
+
+.composer-send:not(:disabled):hover {
   background: #1f232a;
   color: #ffffff;
 }
 
-.composer-send:hover {
-  background: #11151b;
+.composer-send:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 
 .mac-chrome {

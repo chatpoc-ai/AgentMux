@@ -88,6 +88,7 @@ const I18N = {
     chooseThisFolder: "Choose this folder",
     linkThisDir: "Link this directory",
     newFolder: "New folder",
+    jumpToLatest: "Jump to latest",
     status_idle: "Idle",
     status_working: "Working",
     status_waiting: "Waiting for you",
@@ -211,6 +212,7 @@ const I18N = {
     chooseThisFolder: "选择这个文件夹",
     linkThisDir: "关联这个目录",
     newFolder: "新建文件夹",
+    jumpToLatest: "回到最新",
     status_idle: "空闲",
     status_working: "工作中",
     status_waiting: "等你回应",
@@ -293,6 +295,14 @@ function defaultAppSettings() {
 const MODEL_CHIP_LIMIT = 12;
 
 /** WebSocket reconnect backoff: first retry after this, doubling up to the cap. */
+/** Bounds for the auto-growing composer, in px. */
+/** Bottom panel drag range; the lower bound is raised so the terminal fits. */
+const BOTTOM_PANEL_MIN = 140;
+const BOTTOM_PANEL_MAX = 800;
+
+const COMPOSER_MIN_HEIGHT = 44;
+const COMPOSER_MAX_HEIGHT = 200;
+
 const RECONNECT_BASE_MS = 800;
 const RECONNECT_MAX_MS = 15000;
 
@@ -330,6 +340,10 @@ function fallbackProviderOptions(t) {
 }
 
 /** Must match tmux default pane (server keeps sessions at default size; no resize-window). */
+/** PageUp / PageDown as xterm would encode them. */
+const PAGE_UP_SEQUENCE = `${String.fromCharCode(27)}[5~`;
+const PAGE_DOWN_SEQUENCE = `${String.fromCharCode(27)}[6~`;
+
 const TMUX_PANE_COLS = 80;
 const TMUX_PANE_ROWS = 24;
 
@@ -412,6 +426,15 @@ function IconTerminal() {
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
       <rect x="3.5" y="5" width="17" height="14" rx="3" />
       <path d="m7.5 10 2.5 2-2.5 2M12.5 14h4" />
+    </svg>
+  );
+}
+
+function IconSend() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M19 7v4a3 3 0 0 1-3 3H6" />
+      <path d="m9.5 10.5-3.5 3.5 3.5 3.5" />
     </svg>
   );
 }
@@ -690,8 +713,17 @@ const TerminalWorkspace = forwardRef(function TerminalWorkspace(
       try {
         term.reset();
         if (data) {
-          term.write(normalizeSnapshotPayload(data));
-          term.scrollToBottom();
+          // scrollToBottom has to wait for the write callback: write() queues
+          // the data and parses it asynchronously, so scrolling immediately
+          // after moves a viewport that has not received the rows yet, leaving
+          // a freshly opened terminal parked partway up.
+          term.write(normalizeSnapshotPayload(data), () => {
+            try {
+              term.scrollToBottom();
+            } catch {
+              /* terminal disposed while the write was queued */
+            }
+          });
           syncXtermToTmuxDims(term);
         }
         window.requestAnimationFrame(() => {
@@ -787,10 +819,37 @@ const TerminalWorkspace = forwardRef(function TerminalWorkspace(
       /* intentionally no fit()+resize here — see markReady comment */
     });
     resizeObserver.observe(host);
+
+    /**
+     * Send the wheel to the pane when xterm has nothing of its own to scroll.
+     *
+     * An alt-screen TUI (Claude Code) draws to a buffer with no scrollback, so
+     * tmux has no history to hand over and xterm's viewport never grows — the
+     * wheel does nothing. Those applications scroll their own transcript on
+     * PageUp/PageDown instead, which is what they tell you to use under tmux.
+     *
+     * Panes in the normal buffer (Codex with --no-alt-screen) do build xterm
+     * scrollback, so this steps aside and lets xterm scroll natively.
+     */
+    const onWheel = (event) => {
+      const viewport = host.querySelector(".xterm-viewport");
+      if (viewport && viewport.scrollHeight > viewport.clientHeight) return;
+      const active = activeTerminalRef.current;
+      if (!active || !event.deltaY) return;
+      event.preventDefault();
+      onInputRef.current?.(
+        active.projectId,
+        active.id,
+        event.deltaY < 0 ? PAGE_UP_SEQUENCE : PAGE_DOWN_SEQUENCE,
+      );
+    };
+    host.addEventListener("wheel", onWheel, { passive: false });
+
     tryOpen();
 
     return () => {
       disposed = true;
+      host.removeEventListener("wheel", onWheel);
       resizeObserver.disconnect();
       try {
         term.dispose();
@@ -1167,6 +1226,7 @@ export default function App() {
   const [sidebarWidth, setSidebarWidth] = useState(320);
   const [sidebarVisible, setSidebarVisible] = useState(true);
   const [newTerminalDialog, setNewTerminalDialog] = useState(null);
+  const composerInputRef = useRef(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerRoots, setPickerRoots] = useState([]);
   const [pickerPath, setPickerPath] = useState("");
@@ -1183,7 +1243,11 @@ export default function App() {
   const [bottomPanelHeight, setBottomPanelHeight] = useState(() => {
     const saved = window.localStorage.getItem("agentmux.bottomPanelHeight");
     const parsed = Number(saved);
-    return Number.isFinite(parsed) ? Math.min(800, Math.max(320, parsed)) : 760;
+    // Only a sanity range here; the real floor depends on the terminal's
+    // natural height, which is not measurable yet at this point.
+    return Number.isFinite(parsed)
+      ? Math.min(BOTTOM_PANEL_MAX, Math.max(BOTTOM_PANEL_MIN, parsed))
+      : 360;
   });
   const [composerText, setComposerText] = useState("");
   const [projectHistories, setProjectHistories] = useState({});
@@ -1426,6 +1490,65 @@ export default function App() {
       JSON.stringify({ type: "subscribe_terminal", terminalId: activeTerminalId || null }),
     );
   }, [activeTerminalId, connectionState]);
+
+  /**
+   * Size the composer to its content: one line when empty, growing as the
+   * draft does, and scrolling internally once it would take too much of the
+   * panel. CSS alone cannot do this for a textarea — the height has to be
+   * measured from scrollHeight.
+   */
+  const resizeComposer = useEffectEvent(() => {
+    const el = composerInputRef.current;
+    if (!el) return;
+    // Collapse before measuring. Reading scrollHeight at height:auto reports
+    // the element's current box when that exceeds the text, so an empty
+    // composer would keep whatever height it last had.
+    el.style.height = "0px";
+    const content = el.scrollHeight;
+    // Cap against the panel so a short panel keeps room for history. Computed
+    // here rather than as a CSS percentage: a percentage resolves against a
+    // parent this element sizes, which feeds back and runs away.
+    const shell = composerShellRef.current;
+    let cap = Math.max(
+      COMPOSER_MIN_HEIGHT,
+      Math.min(COMPOSER_MAX_HEIGHT, Math.round((shell?.clientHeight || 320) * 0.4)),
+    );
+    // Snap the cap down to a whole number of lines. Stopping mid-line leaves a
+    // sliced row at the bottom edge, which reads as clipped rather than as
+    // scrollable.
+    const style = window.getComputedStyle(el);
+    const lineHeight = parseFloat(style.lineHeight);
+    const padding = parseFloat(style.paddingTop) + parseFloat(style.paddingBottom);
+    if (Number.isFinite(lineHeight) && lineHeight > 0) {
+      const lines = Math.max(1, Math.floor((cap - padding) / lineHeight));
+      // Ceil, not round: rounding down leaves the last line a fraction short,
+      // which shows as a sliced row exactly like the mid-line stop it is meant
+      // to avoid.
+      cap = Math.max(COMPOSER_MIN_HEIGHT, Math.ceil(padding + lines * lineHeight));
+    }
+    el.style.height = `${Math.max(COMPOSER_MIN_HEIGHT, Math.min(content, cap))}px`;
+  });
+
+  useEffect(() => {
+    resizeComposer();
+  }, [composerText, resizeComposer]);
+
+  // The first pass runs before layout has settled, and the cap depends on the
+  // panel's height, which the operator can drag. Re-measure whenever the shell
+  // changes size, and once more after the first frame.
+  useEffect(() => {
+    const shell = composerShellRef.current;
+    const frame = requestAnimationFrame(() => resizeComposer());
+    if (!shell || typeof ResizeObserver === "undefined") {
+      return () => cancelAnimationFrame(frame);
+    }
+    const observer = new ResizeObserver(() => resizeComposer());
+    observer.observe(shell);
+    return () => {
+      cancelAnimationFrame(frame);
+      observer.disconnect();
+    };
+  }, [resizeComposer]);
 
   useEffect(() => {
     window.localStorage.setItem(
@@ -2107,6 +2230,64 @@ export default function App() {
     };
   }, []);
 
+  /**
+   * Smallest bottom panel that still leaves the terminal fully visible.
+   *
+   * The pane is pinned to 80x24 and never resized (see the note on
+   * _spawnTerminal), so the terminal has one natural height. Growing the area
+   * beyond it only adds blank space, and the divider used to allow exactly
+   * that; shrinking below it crops rows the operator then has to scroll the
+   * surface to reach.
+   */
+  const minBottomPanelHeight = useEffectEvent(() => {
+    // terminalShellRef is on .terminal-surface — the whole card, title bar
+    // included — not on the scrolling .terminal-shell inside it.
+    const surface = terminalShellRef.current;
+    const panel = bottomPanelRef.current;
+    if (!surface || !panel) return BOTTOM_PANEL_MIN;
+    const scroller = surface.querySelector(".terminal-shell");
+    const xterm = surface.querySelector(".xterm");
+    const container = panel.parentElement;
+    if (!scroller || !xterm || !container) return BOTTOM_PANEL_MIN;
+    const height = (el) => el.getBoundingClientRect().height;
+    // Everything in the card that is not the terminal itself.
+    const chrome = height(surface) - height(scroller);
+    const needed = height(xterm) + chrome;
+    return Math.max(
+      BOTTOM_PANEL_MIN,
+      Math.round(height(container) - needed - 2),
+    );
+  });
+
+  // A stored height from a taller window, or a window the operator just
+  // shrank, would crop the terminal the same way dragging used to. Re-clamp
+  // whenever the window changes size, and once after the terminal has been
+  // laid out and its natural height is known.
+  useEffect(() => {
+    const clamp = () => {
+      const floor = minBottomPanelHeight();
+      setBottomPanelHeight((current) =>
+        current < floor ? Math.min(BOTTOM_PANEL_MAX, floor) : current,
+      );
+    };
+    const surface = terminalShellRef.current;
+    // A single pass after mount is too early: xterm is attached asynchronously,
+    // so there is nothing to measure yet and the floor falls back to its
+    // minimum. Watching the card instead re-runs this once the terminal has
+    // actually been laid out, and again whenever the window changes size.
+    const observer =
+      surface && typeof ResizeObserver !== "undefined"
+        ? new ResizeObserver(clamp)
+        : null;
+    observer?.observe(surface);
+    window.addEventListener("resize", clamp);
+    clamp();
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", clamp);
+    };
+  }, [minBottomPanelHeight, activeTerminalId]);
+
   useEffect(() => {
     const onMove = (event) => {
       if (!resizingRef.current) return;
@@ -2118,14 +2299,18 @@ export default function App() {
         const next = Math.min(640, Math.max(200, window.innerWidth - event.clientX));
         setFilesPanelWidth(next);
       } else if (target === "bottom") {
-        const next = Math.min(800, Math.max(140, window.innerHeight - event.clientY));
+        const floor = minBottomPanelHeight();
+        const next = Math.min(
+          BOTTOM_PANEL_MAX,
+          Math.max(floor, window.innerHeight - event.clientY),
+        );
         setBottomPanelHeight(next);
       }
     };
     const onUp = () => {
       resizingRef.current = false;
       resizeTargetRef.current = null;
-      document.body.classList.remove("is-resizing");
+      document.body.classList.remove("is-resizing", "is-resizing-row", "is-resizing-col");
     };
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
@@ -2139,6 +2324,11 @@ export default function App() {
     resizingRef.current = true;
     resizeTargetRef.current = target;
     document.body.classList.add("is-resizing");
+    // The bottom divider moves vertically; without this it showed the
+    // left-right cursor while dragging, the opposite of what it does.
+    document.body.classList.add(
+      target === "bottom" ? "is-resizing-row" : "is-resizing-col",
+    );
   };
 
   const openPicker = async () => {
@@ -2316,6 +2506,10 @@ export default function App() {
   const activeHistory = activeProject ? projectHistories[activeProject.id] || [] : [];
   const composerShellRef = useRef(null);
   const historyEndRef = useRef(null);
+  const historyRef = useRef(null);
+  /** Mirrors historyAtBottom for effects that must not re-run when it flips. */
+  const historyPinnedRef = useRef(true);
+  const [historyAtBottom, setHistoryAtBottom] = useState(true);
   const previewFile =
     selectedFile && fileContentState[selectedFile.projectId]?.file
       ? fileContentState[selectedFile.projectId].file
@@ -2330,10 +2524,42 @@ export default function App() {
     ? `${selectedFile.rootId || "main"}:${selectedFile.path}`
     : "";
 
+  /**
+   * Jump the history to its newest end.
+   *
+   * Instant, not smooth. Smooth scrolling is advisory — it is silently ignored
+   * in some environments (observed here), and a follow that quietly does
+   * nothing is worse than one without animation.
+   */
+  const scrollHistoryToBottom = () => {
+    const el = historyRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+    historyPinnedRef.current = true;
+    setHistoryAtBottom(true);
+  };
+
+  /**
+   * Follow new messages, but only while the reader is already at the bottom.
+   *
+   * This used to scroll unconditionally, so a message arriving while the
+   * operator was reading further up yanked them back down mid-sentence.
+   */
   useEffect(() => {
-    const target = composerShellRef.current || historyEndRef.current;
-    target?.scrollIntoView?.({ block: "end", behavior: "smooth" });
-  }, [activeProjectId, activeHistory]);
+    if (!historyPinnedRef.current) return;
+    const el = historyRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, [activeHistory]);
+
+  // Switching project is a fresh conversation: always start at the newest end,
+  // without the animation, and re-arm following.
+  useEffect(() => {
+    historyPinnedRef.current = true;
+    setHistoryAtBottom(true);
+    const el = historyRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [activeProjectId]);
 
   useEffect(() => {
     if (!activeProject) return;
@@ -2648,14 +2874,34 @@ export default function App() {
               >
                 <div className="bottom-panel-grid simple">
                   <section className="bottom-card composer-card">
+                    {/* The form is a layout link, not just a wrapper: unstyled
+                        it is a display:block box with min-height:auto, which
+                        grows to the history's full height and breaks the chain
+                        that keeps the composer pinned and the history scrolling. */}
                     <form
+                      className="composer-form"
                       onSubmit={(event) => {
                         event.preventDefault();
                         sendComposer();
                       }}
                     >
                       <div className="composer-shell" ref={composerShellRef}>
-                        <div className="composer-history" aria-label={t("collaborationHistory")}>
+                        <div
+                          className="composer-history"
+                          ref={historyRef}
+                          aria-label={t("collaborationHistory")}
+                          onScroll={(event) => {
+                            const el = event.currentTarget;
+                            // A few pixels of slack: smooth scrolling and
+                            // sub-pixel heights rarely land exactly on zero.
+                            const atBottom =
+                              el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+                            historyPinnedRef.current = atBottom;
+                            setHistoryAtBottom((current) =>
+                              current === atBottom ? current : atBottom,
+                            );
+                          }}
+                        >
                           {activeHistory.length ? (
                             activeHistory.map((event) => {
                               const text = summarizeEvent(event);
@@ -2705,8 +2951,27 @@ export default function App() {
                           )}
                           <div ref={historyEndRef} />
                         </div>
+                        {/* Only while the reader has scrolled away from the
+                            newest end; following is automatic otherwise. */}
+                        {!historyAtBottom ? (
+                          <button
+                            type="button"
+                            className="history-jump"
+                            onClick={() => scrollHistoryToBottom()}
+                          >
+                            {t("jumpToLatest")}
+                            <span aria-hidden="true">↓</span>
+                          </button>
+                        ) : null}
+
+                        {/* The field wraps the textarea so controls can sit
+                            inside it — send on the right today, attachments or
+                            voice on the left later. */}
+                        <div className="composer-field">
                         <textarea
                           id="composer-input"
+                          ref={composerInputRef}
+                          rows={1}
                           className="composer-input"
                           value={composerText}
                           onChange={(event) => setComposerText(event.target.value)}
@@ -2714,13 +2979,15 @@ export default function App() {
                           placeholder={t("inputPlaceholder")}
                           onKeyDown={handleComposerKeyDown}
                         />
-                        <div className="composer-toolbar">
                           <button
                             type="button"
                             className="composer-send"
                             onClick={sendComposer}
+                            disabled={!composerText.trim()}
+                            title={t("send")}
+                            aria-label={t("send")}
                           >
-                            {t("send")}
+                            <IconSend />
                           </button>
                         </div>
                       </div>
