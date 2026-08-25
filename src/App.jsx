@@ -296,7 +296,7 @@ const MODEL_CHIP_LIMIT = 12;
 
 /** WebSocket reconnect backoff: first retry after this, doubling up to the cap. */
 /** Bounds for the auto-growing composer, in px. */
-/** Bottom panel drag range; the lower bound is raised so the terminal fits. */
+/** Bottom panel drag range. */
 const BOTTOM_PANEL_MIN = 140;
 const BOTTOM_PANEL_MAX = 800;
 
@@ -344,15 +344,25 @@ function fallbackProviderOptions(t) {
 const PAGE_UP_SEQUENCE = `${String.fromCharCode(27)}[5~`;
 const PAGE_DOWN_SEQUENCE = `${String.fromCharCode(27)}[6~`;
 
+/**
+ * Only the size xterm starts at, before its first fit. The pane follows the
+ * window from then on; nothing is pinned to these.
+ */
 const TMUX_PANE_COLS = 80;
 const TMUX_PANE_ROWS = 24;
 
-function syncXtermToTmuxDims(term) {
-  try {
-    term.resize(TMUX_PANE_COLS, TMUX_PANE_ROWS);
-  } catch {
-    /* ignore */
-  }
+/**
+ * Whether the operator is typing somewhere that must not lose focus.
+ *
+ * A snapshot arrives for many reasons — resize, reconnect, and every message
+ * sent from the composer, which requests one. Focusing the terminal on each
+ * one pulled the caret out of the composer right after sending.
+ */
+function isTypingElsewhere() {
+  const el = document.activeElement;
+  if (!el || el === document.body) return false;
+  const tag = el.tagName;
+  return tag === "INPUT" || tag === "TEXTAREA" || el.isContentEditable === true;
 }
 
 /** capture-pane often ends with extra newlines → phantom row below the real TUI line. */
@@ -724,12 +734,18 @@ const TerminalWorkspace = forwardRef(function TerminalWorkspace(
               /* terminal disposed while the write was queued */
             }
           });
-          syncXtermToTmuxDims(term);
+          // Deliberately no fit() here. The server pushes a snapshot right
+          // after it resizes a pane; fitting on receipt closed that into a
+          // loop — fit, report the size, server resizes, snapshot, fit again —
+          // which left the client and the pane at different widths, exactly
+          // the mismatch the fixed size used to avoid. Sizing belongs to the
+          // container observer alone.
         }
         window.requestAnimationFrame(() => {
         if (!terminalMatches(activeTerminalRef.current, projectId, terminalId)) {
           return;
         }
+        if (isTypingElsewhere()) return;
         try {
           term.focus();
         } catch {
@@ -777,15 +793,19 @@ const TerminalWorkspace = forwardRef(function TerminalWorkspace(
     let opened = false;
     let disposed = false;
 
-    const markReady = () => {
+    const fitTerminal = () => {
       if (disposed) return;
       try {
         fitAddon.fit();
-        syncXtermToTmuxDims(term);
       } catch {
-        /* ignore */
+        /* container not laid out yet */
       }
+    };
+
+    const markReady = () => {
+      if (disposed) return;
       window.requestAnimationFrame(() => {
+        if (isTypingElsewhere()) return;
         try {
           term.focus();
         } catch {
@@ -805,6 +825,12 @@ const TerminalWorkspace = forwardRef(function TerminalWorkspace(
         opened = false;
         return;
       }
+      // Size it now, and again after layout. This used to hang off the first
+      // onRender, which never fires for a pane that has produced no output —
+      // so an empty terminal kept xterm's construction size while the pane
+      // followed the window, and the two disagreed.
+      fitTerminal();
+      window.requestAnimationFrame(fitTerminal);
       const renderDisposable = term.onRender(() => {
         renderDisposable.dispose();
         markReady();
@@ -816,7 +842,10 @@ const TerminalWorkspace = forwardRef(function TerminalWorkspace(
         tryOpen();
         return;
       }
-      /* intentionally no fit()+resize here — see markReady comment */
+      // Re-fit so the pane follows the window. term.onResize fires only when
+      // the computed cols/rows actually change, so this does not spam the
+      // server with identical sizes.
+      fitTerminal();
     });
     resizeObserver.observe(host);
 
@@ -2239,54 +2268,9 @@ export default function App() {
    * that; shrinking below it crops rows the operator then has to scroll the
    * surface to reach.
    */
-  const minBottomPanelHeight = useEffectEvent(() => {
-    // terminalShellRef is on .terminal-surface — the whole card, title bar
-    // included — not on the scrolling .terminal-shell inside it.
-    const surface = terminalShellRef.current;
-    const panel = bottomPanelRef.current;
-    if (!surface || !panel) return BOTTOM_PANEL_MIN;
-    const scroller = surface.querySelector(".terminal-shell");
-    const xterm = surface.querySelector(".xterm");
-    const container = panel.parentElement;
-    if (!scroller || !xterm || !container) return BOTTOM_PANEL_MIN;
-    const height = (el) => el.getBoundingClientRect().height;
-    // Everything in the card that is not the terminal itself.
-    const chrome = height(surface) - height(scroller);
-    const needed = height(xterm) + chrome;
-    return Math.max(
-      BOTTOM_PANEL_MIN,
-      Math.round(height(container) - needed - 2),
-    );
-  });
 
-  // A stored height from a taller window, or a window the operator just
-  // shrank, would crop the terminal the same way dragging used to. Re-clamp
-  // whenever the window changes size, and once after the terminal has been
-  // laid out and its natural height is known.
-  useEffect(() => {
-    const clamp = () => {
-      const floor = minBottomPanelHeight();
-      setBottomPanelHeight((current) =>
-        current < floor ? Math.min(BOTTOM_PANEL_MAX, floor) : current,
-      );
-    };
-    const surface = terminalShellRef.current;
-    // A single pass after mount is too early: xterm is attached asynchronously,
-    // so there is nothing to measure yet and the floor falls back to its
-    // minimum. Watching the card instead re-runs this once the terminal has
-    // actually been laid out, and again whenever the window changes size.
-    const observer =
-      surface && typeof ResizeObserver !== "undefined"
-        ? new ResizeObserver(clamp)
-        : null;
-    observer?.observe(surface);
-    window.addEventListener("resize", clamp);
-    clamp();
-    return () => {
-      observer?.disconnect();
-      window.removeEventListener("resize", clamp);
-    };
-  }, [minBottomPanelHeight, activeTerminalId]);
+
+
 
   useEffect(() => {
     const onMove = (event) => {
@@ -2299,10 +2283,11 @@ export default function App() {
         const next = Math.min(640, Math.max(200, window.innerWidth - event.clientX));
         setFilesPanelWidth(next);
       } else if (target === "bottom") {
-        const floor = minBottomPanelHeight();
+        // A free range again: the terminal reflows to whatever height it is
+        // given, so there is no size it must land on.
         const next = Math.min(
           BOTTOM_PANEL_MAX,
-          Math.max(floor, window.innerHeight - event.clientY),
+          Math.max(BOTTOM_PANEL_MIN, window.innerHeight - event.clientY),
         );
         setBottomPanelHeight(next);
       }
@@ -2435,6 +2420,14 @@ export default function App() {
       terminalId: activeTerminalId,
     });
     setComposerText("");
+    // Sending is a deliberate move to the present, so it re-arms the follow
+    // even if the reader had scrolled up: their own message, and the reply to
+    // it, are what they now want to see.
+    scrollHistoryToBottom();
+    // Keep the caret here so a follow-up message can be typed straight away.
+    // Sending requests a snapshot, and the terminal used to take focus when it
+    // arrived; the guard above stops that, this makes the intent explicit.
+    composerInputRef.current?.focus();
   };
 
   const handleComposerKeyDown = (event) => {
@@ -2509,6 +2502,8 @@ export default function App() {
   const historyRef = useRef(null);
   /** Mirrors historyAtBottom for effects that must not re-run when it flips. */
   const historyPinnedRef = useRef(true);
+  /** Previous scrollTop, to tell a deliberate scroll from a container resize. */
+  const historyLastTopRef = useRef(0);
   const [historyAtBottom, setHistoryAtBottom] = useState(true);
   const previewFile =
     selectedFile && fileContentState[selectedFile.projectId]?.file
@@ -2525,6 +2520,21 @@ export default function App() {
     : "";
 
   /**
+   * Pin the history to its end and record where that left it.
+   *
+   * Every programmatic scroll must update the remembered position, or the
+   * next real scroll is compared against a stale one — a first scroll upward
+   * was measured against 0 and read as moving *down*, so it never un-pinned.
+   *
+   * @param {HTMLElement | null} el
+   */
+  const pinHistoryToBottom = (el) => {
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+    historyLastTopRef.current = el.scrollTop;
+  };
+
+  /**
    * Jump the history to its newest end.
    *
    * Instant, not smooth. Smooth scrolling is advisory — it is silently ignored
@@ -2532,9 +2542,7 @@ export default function App() {
    * nothing is worse than one without animation.
    */
   const scrollHistoryToBottom = () => {
-    const el = historyRef.current;
-    if (!el) return;
-    el.scrollTop = el.scrollHeight;
+    pinHistoryToBottom(historyRef.current);
     historyPinnedRef.current = true;
     setHistoryAtBottom(true);
   };
@@ -2545,20 +2553,59 @@ export default function App() {
    * This used to scroll unconditionally, so a message arriving while the
    * operator was reading further up yanked them back down mid-sentence.
    */
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!historyPinnedRef.current) return;
     const el = historyRef.current;
     if (!el) return;
-    el.scrollTop = el.scrollHeight;
+    // Before paint, so the new message is never briefly visible below the fold.
+    pinHistoryToBottom(el);
+    // Again next frame: a bubble whose text wraps, or whose fonts settle late,
+    // grows after this effect and would leave the tail cut off.
+    const frame = requestAnimationFrame(() => {
+      if (historyPinnedRef.current) pinHistoryToBottom(el);
+    });
+    return () => cancelAnimationFrame(frame);
   }, [activeHistory]);
+
+  /**
+   * Re-evaluate the pinned state when the container resizes, not only when it
+   * is scrolled.
+   *
+   * Growing the composer shrinks the history, which moves the bottom without
+   * firing a scroll event — leaving the follow armed but the button's state
+   * stale, or the view a little short of the end.
+   */
+  useEffect(() => {
+    const el = historyRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    let frame = 0;
+    const observer = new ResizeObserver(() => {
+      // Next frame, not immediately: the composer's own auto-grow runs in a
+      // separate effect, so the height can change once more after this fires
+      // and measuring now lands a few pixels short of the end.
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        if (historyPinnedRef.current) {
+          pinHistoryToBottom(el);
+          return;
+        }
+        const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+        setHistoryAtBottom((current) => (current === atBottom ? current : atBottom));
+      });
+    });
+    observer.observe(el);
+    return () => {
+      cancelAnimationFrame(frame);
+      observer.disconnect();
+    };
+  }, []);
 
   // Switching project is a fresh conversation: always start at the newest end,
   // without the animation, and re-arm following.
   useEffect(() => {
     historyPinnedRef.current = true;
     setHistoryAtBottom(true);
-    const el = historyRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
+    pinHistoryToBottom(historyRef.current);
   }, [activeProjectId]);
 
   useEffect(() => {
@@ -2892,13 +2939,22 @@ export default function App() {
                           aria-label={t("collaborationHistory")}
                           onScroll={(event) => {
                             const el = event.currentTarget;
-                            // A few pixels of slack: smooth scrolling and
-                            // sub-pixel heights rarely land exactly on zero.
+                            // A few pixels of slack: sub-pixel heights rarely
+                            // land exactly on zero.
                             const atBottom =
                               el.scrollHeight - el.scrollTop - el.clientHeight < 24;
-                            historyPinnedRef.current = atBottom;
+                            const movedUp = el.scrollTop < historyLastTopRef.current;
+                            historyLastTopRef.current = el.scrollTop;
+                            // Only a deliberate scroll away from the end stops
+                            // the follow. Shrinking the container — which the
+                            // composer does as it grows — pushes the bottom
+                            // further down without the reader moving, and used
+                            // to be read as "they scrolled up".
+                            if (atBottom) historyPinnedRef.current = true;
+                            else if (movedUp) historyPinnedRef.current = false;
+                            const showJump = !atBottom && !historyPinnedRef.current;
                             setHistoryAtBottom((current) =>
-                              current === atBottom ? current : atBottom,
+                              current === !showJump ? current : !showJump,
                             );
                           }}
                         >

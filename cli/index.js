@@ -77,8 +77,19 @@ function parseArgs(argv) {
   return { flags, positional };
 }
 
+/**
+ * Read stdin, once.
+ *
+ * Memoized because stdin is a single stream: a second read attaches listeners
+ * to an already-ended one, so its "end" never fires. Passing `-` to two flags
+ * (`--summary - --detail -`, which the instructions invited) made the whole
+ * command fail silently, and the agent's report never reached the event log.
+ * Sharing the text between them is redundant but delivers the report.
+ */
+let stdinRead = null;
 function readStdin() {
-  return new Promise((resolve, reject) => {
+  if (stdinRead) return stdinRead;
+  stdinRead = new Promise((resolve, reject) => {
     let buf = "";
     process.stdin.setEncoding("utf8");
     process.stdin.on("data", (chunk) => {
@@ -87,6 +98,7 @@ function readStdin() {
     process.stdin.on("end", () => resolve(buf));
     process.stdin.on("error", reject);
   });
+  return stdinRead;
 }
 
 /**

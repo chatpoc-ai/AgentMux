@@ -73,6 +73,13 @@ const SNAPSHOT_SCROLLBACK_LINES = Math.max(
   Number(process.env.AGENTMUX_SNAPSHOT_SCROLLBACK) || 1000,
 );
 
+/** Bounds for a pane the browser asks us to resize to, and the repaint delay. */
+const MIN_PANE_COLS = 40;
+const MAX_PANE_COLS = 400;
+const MIN_PANE_ROWS = 8;
+const MAX_PANE_ROWS = 200;
+const RESIZE_REPAINT_MS = 120;
+
 const STATUS_POLL_MS = 1000;
 const WORKING_GRACE_MS = 3000;
 
@@ -342,6 +349,9 @@ class TerminalSession {
     // respawn this pane as something else after a restart.
     this.cli = DEFAULT_PROVIDER;
     this.model = "";
+    /** Current pane size, so a repeated measurement is not a repeated SIGWINCH. */
+    this.cols = 0;
+    this.rows = 0;
     /** Hash of the last rendered frame, for activity detection. */
     this.frameHash = "";
     this.lastFrameChangeAt = 0;
@@ -1204,8 +1214,48 @@ class AgentMuxServer {
    * ignore them here. Handler is kept so older clients don't get
    * "Unknown type: resize" errors.
    */
-  resizeTerminal(_projectId, _terminalId, _cols, _rows) {
-    /* no-op by design — see doc block above */
+  /**
+   * Resize a pane to match what the browser is rendering.
+   *
+   * The pane and the client must agree: a mismatch is what produced the
+   * wrapped separators and reverse-video bars the size used to be frozen to
+   * avoid. Following the client keeps them in step by construction, where
+   * pinning both to 80x24 did it by never moving.
+   *
+   * Unchanged sizes are dropped so a stream of near-identical measurements
+   * during a drag does not become a stream of SIGWINCHes.
+   *
+   * @param {string} projectId
+   * @param {string} terminalId
+   * @param {number} cols
+   * @param {number} rows
+   */
+  resizeTerminal(projectId, terminalId, cols, rows) {
+    const project = this.projects.get(projectId);
+    const term = project?.terminals.find((item) => item.id === terminalId);
+    if (!term) return;
+    const nextCols = Math.max(MIN_PANE_COLS, Math.min(MAX_PANE_COLS, Math.floor(cols) || 0));
+    const nextRows = Math.max(MIN_PANE_ROWS, Math.min(MAX_PANE_ROWS, Math.floor(rows) || 0));
+    if (term.cols === nextCols && term.rows === nextRows) return;
+    try {
+      tmux(["resize-window", "-t", term.name, "-x", String(nextCols), "-y", String(nextRows)]);
+    } catch (err) {
+      console.error(`Failed to resize ${term.name}: ${err?.message || err}`);
+      return;
+    }
+    term.cols = nextCols;
+    term.rows = nextRows;
+    // A TUI redraws itself on SIGWINCH, but only into the pane — the client
+    // needs the resulting frame, and its own incremental stream will not carry
+    // the parts that did not change.
+    setTimeout(() => {
+      this.broadcast({
+        type: "terminal_snapshot",
+        projectId,
+        terminalId,
+        data: this.capturePane(projectId, terminalId),
+      });
+    }, RESIZE_REPAINT_MS);
   }
 
   /**
@@ -1241,13 +1291,12 @@ class AgentMuxServer {
     const term = project?.terminals.find((item) => item.id === terminalId);
     if (!term) return;
     const target = `${term.name}:0`;
-    const lines = text.split("\n");
-    for (let i = 0; i < lines.length; i += 1) {
-      tmux(["send-keys", "-t", target, "-l", lines[i]]);
-      if (i < lines.length - 1) {
-        tmux(["send-keys", "-t", target, "Enter"]);
-      }
-    }
+    // One literal write, newlines included. Sending each line followed by a
+    // real Enter key made the TUI submit line by line, so a four-line message
+    // arrived as four separate ones. Newline bytes inside a paste burst are
+    // inserted as newlines instead — the same mechanism that requires the
+    // submitting Enter below to arrive separately.
+    tmux(["send-keys", "-t", target, "-l", text]);
     if (!appendEnter) return;
     // Deferred, not slept on: this runs on the request path, and blocking the
     // event loop here would stall every other client's output for the delay.
