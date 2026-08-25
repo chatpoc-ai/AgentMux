@@ -1241,13 +1241,12 @@ class AgentMuxServer {
     const term = project?.terminals.find((item) => item.id === terminalId);
     if (!term) return;
     const target = `${term.name}:0`;
-    const lines = text.split("\n");
-    for (let i = 0; i < lines.length; i += 1) {
-      tmux(["send-keys", "-t", target, "-l", lines[i]]);
-      if (i < lines.length - 1) {
-        tmux(["send-keys", "-t", target, "Enter"]);
-      }
-    }
+    // One literal write, newlines included. Sending each line followed by a
+    // real Enter key made the TUI submit line by line, so a four-line message
+    // arrived as four separate ones. Newline bytes inside a paste burst are
+    // inserted as newlines instead — the same mechanism that requires the
+    // submitting Enter below to arrive separately.
+    tmux(["send-keys", "-t", target, "-l", text]);
     if (!appendEnter) return;
     // Deferred, not slept on: this runs on the request path, and blocking the
     // event loop here would stall every other client's output for the delay.

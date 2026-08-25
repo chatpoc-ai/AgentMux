@@ -347,6 +347,20 @@ const PAGE_DOWN_SEQUENCE = `${String.fromCharCode(27)}[6~`;
 const TMUX_PANE_COLS = 80;
 const TMUX_PANE_ROWS = 24;
 
+/**
+ * Whether the operator is typing somewhere that must not lose focus.
+ *
+ * A snapshot arrives for many reasons — resize, reconnect, and every message
+ * sent from the composer, which requests one. Focusing the terminal on each
+ * one pulled the caret out of the composer right after sending.
+ */
+function isTypingElsewhere() {
+  const el = document.activeElement;
+  if (!el || el === document.body) return false;
+  const tag = el.tagName;
+  return tag === "INPUT" || tag === "TEXTAREA" || el.isContentEditable === true;
+}
+
 function syncXtermToTmuxDims(term) {
   try {
     term.resize(TMUX_PANE_COLS, TMUX_PANE_ROWS);
@@ -730,6 +744,7 @@ const TerminalWorkspace = forwardRef(function TerminalWorkspace(
         if (!terminalMatches(activeTerminalRef.current, projectId, terminalId)) {
           return;
         }
+        if (isTypingElsewhere()) return;
         try {
           term.focus();
         } catch {
@@ -786,6 +801,7 @@ const TerminalWorkspace = forwardRef(function TerminalWorkspace(
         /* ignore */
       }
       window.requestAnimationFrame(() => {
+        if (isTypingElsewhere()) return;
         try {
           term.focus();
         } catch {
@@ -2456,6 +2472,10 @@ export default function App() {
       terminalId: activeTerminalId,
     });
     setComposerText("");
+    // Keep the caret here so a follow-up message can be typed straight away.
+    // Sending requests a snapshot, and the terminal used to take focus when it
+    // arrived; the guard above stops that, this makes the intent explicit.
+    composerInputRef.current?.focus();
   };
 
   const handleComposerKeyDown = (event) => {
