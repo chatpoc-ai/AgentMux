@@ -2239,23 +2239,37 @@ export default function App() {
    * that; shrinking below it crops rows the operator then has to scroll the
    * surface to reach.
    */
+  /**
+   * Panel height at which the terminal exactly fits.
+   *
+   * Computed as a correction to the current height rather than by adding up
+   * the card's parts. Summing was fragile twice over: it missed the
+   * scroller's own padding, and it read the content height from
+   * scrollHeight, which reports the container's height whenever nothing
+   * overflows — measuring the container with itself.
+   *
+   * The deficit is how much room the terminal is short of (negative when the
+   * card is padding itself with blank space); the panel moves by exactly that,
+   * in the opposite direction.
+   */
   const minBottomPanelHeight = useEffectEvent(() => {
     // terminalShellRef is on .terminal-surface — the whole card, title bar
     // included — not on the scrolling .terminal-shell inside it.
     const surface = terminalShellRef.current;
     const panel = bottomPanelRef.current;
-    if (!surface || !panel) return BOTTOM_PANEL_MIN;
+    if (!surface || !panel) return null;
     const scroller = surface.querySelector(".terminal-shell");
     const xterm = surface.querySelector(".xterm");
-    const container = panel.parentElement;
-    if (!scroller || !xterm || !container) return BOTTOM_PANEL_MIN;
-    const height = (el) => el.getBoundingClientRect().height;
-    // Everything in the card that is not the terminal itself.
-    const chrome = height(surface) - height(scroller);
-    const needed = height(xterm) + chrome;
+    if (!scroller || !xterm) return null;
+    const style = window.getComputedStyle(scroller);
+    const padding =
+      (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0);
+    const needed = xterm.getBoundingClientRect().height + padding;
+    const deficit = needed - scroller.clientHeight;
+    const target = panel.getBoundingClientRect().height - deficit;
     return Math.max(
       BOTTOM_PANEL_MIN,
-      Math.round(height(container) - needed - 2),
+      Math.min(BOTTOM_PANEL_MAX, Math.ceil(target)),
     );
   });
 
@@ -2265,9 +2279,16 @@ export default function App() {
   // laid out and its natural height is known.
   useEffect(() => {
     const clamp = () => {
-      const floor = minBottomPanelHeight();
+      // Not while the operator is dragging: the observer fires on every frame
+      // of the drag, and snapping back would fight them.
+      if (resizingRef.current) return;
+      const fit = minBottomPanelHeight();
+      if (fit == null) return;
+      // Settle exactly at the fit, in both directions. Below it the card pads
+      // itself with blank space; above it the terminal loses rows, and since
+      // the pane is a fixed 24 rows those rows buy nothing back.
       setBottomPanelHeight((current) =>
-        current < floor ? Math.min(BOTTOM_PANEL_MAX, floor) : current,
+        current === fit ? current : Math.min(BOTTOM_PANEL_MAX, fit),
       );
     };
     const surface = terminalShellRef.current;
@@ -2299,7 +2320,7 @@ export default function App() {
         const next = Math.min(640, Math.max(200, window.innerWidth - event.clientX));
         setFilesPanelWidth(next);
       } else if (target === "bottom") {
-        const floor = minBottomPanelHeight();
+        const floor = minBottomPanelHeight() ?? BOTTOM_PANEL_MIN;
         const next = Math.min(
           BOTTOM_PANEL_MAX,
           Math.max(floor, window.innerHeight - event.clientY),

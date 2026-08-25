@@ -55,8 +55,15 @@ inline; that is the single most common way these reports get mangled:
 printf '%s' "$REPORT" | agentmux event --type done --summary -
 ```
 
-Add `--detail -` the same way for a longer explanation, and `--severity` with
-`info`, `warning`, or `error` for UI styling.
+`--detail` carries the longer explanation and `--severity` takes `info`,
+`warning`, or `error` for UI styling.
+
+**Only one flag per command may read stdin** — there is only one stdin. Pass
+the other inline:
+
+```sh
+printf '%s' "$DETAIL" | agentmux event --type done --summary "one line" --detail -
+```
 
 ## Working with other terminals
 
