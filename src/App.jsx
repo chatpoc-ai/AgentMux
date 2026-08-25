@@ -2550,6 +2550,8 @@ export default function App() {
   const historyRef = useRef(null);
   /** Mirrors historyAtBottom for effects that must not re-run when it flips. */
   const historyPinnedRef = useRef(true);
+  /** Previous scrollTop, to tell a deliberate scroll from a container resize. */
+  const historyLastTopRef = useRef(0);
   const [historyAtBottom, setHistoryAtBottom] = useState(true);
   const previewFile =
     selectedFile && fileContentState[selectedFile.projectId]?.file
@@ -2566,6 +2568,21 @@ export default function App() {
     : "";
 
   /**
+   * Pin the history to its end and record where that left it.
+   *
+   * Every programmatic scroll must update the remembered position, or the
+   * next real scroll is compared against a stale one — a first scroll upward
+   * was measured against 0 and read as moving *down*, so it never un-pinned.
+   *
+   * @param {HTMLElement | null} el
+   */
+  const pinHistoryToBottom = (el) => {
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+    historyLastTopRef.current = el.scrollTop;
+  };
+
+  /**
    * Jump the history to its newest end.
    *
    * Instant, not smooth. Smooth scrolling is advisory — it is silently ignored
@@ -2573,9 +2590,7 @@ export default function App() {
    * nothing is worse than one without animation.
    */
   const scrollHistoryToBottom = () => {
-    const el = historyRef.current;
-    if (!el) return;
-    el.scrollTop = el.scrollHeight;
+    pinHistoryToBottom(historyRef.current);
     historyPinnedRef.current = true;
     setHistoryAtBottom(true);
   };
@@ -2586,20 +2601,59 @@ export default function App() {
    * This used to scroll unconditionally, so a message arriving while the
    * operator was reading further up yanked them back down mid-sentence.
    */
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!historyPinnedRef.current) return;
     const el = historyRef.current;
     if (!el) return;
-    el.scrollTop = el.scrollHeight;
+    // Before paint, so the new message is never briefly visible below the fold.
+    pinHistoryToBottom(el);
+    // Again next frame: a bubble whose text wraps, or whose fonts settle late,
+    // grows after this effect and would leave the tail cut off.
+    const frame = requestAnimationFrame(() => {
+      if (historyPinnedRef.current) pinHistoryToBottom(el);
+    });
+    return () => cancelAnimationFrame(frame);
   }, [activeHistory]);
+
+  /**
+   * Re-evaluate the pinned state when the container resizes, not only when it
+   * is scrolled.
+   *
+   * Growing the composer shrinks the history, which moves the bottom without
+   * firing a scroll event — leaving the follow armed but the button's state
+   * stale, or the view a little short of the end.
+   */
+  useEffect(() => {
+    const el = historyRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    let frame = 0;
+    const observer = new ResizeObserver(() => {
+      // Next frame, not immediately: the composer's own auto-grow runs in a
+      // separate effect, so the height can change once more after this fires
+      // and measuring now lands a few pixels short of the end.
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        if (historyPinnedRef.current) {
+          pinHistoryToBottom(el);
+          return;
+        }
+        const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+        setHistoryAtBottom((current) => (current === atBottom ? current : atBottom));
+      });
+    });
+    observer.observe(el);
+    return () => {
+      cancelAnimationFrame(frame);
+      observer.disconnect();
+    };
+  }, []);
 
   // Switching project is a fresh conversation: always start at the newest end,
   // without the animation, and re-arm following.
   useEffect(() => {
     historyPinnedRef.current = true;
     setHistoryAtBottom(true);
-    const el = historyRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
+    pinHistoryToBottom(historyRef.current);
   }, [activeProjectId]);
 
   useEffect(() => {
@@ -2933,13 +2987,22 @@ export default function App() {
                           aria-label={t("collaborationHistory")}
                           onScroll={(event) => {
                             const el = event.currentTarget;
-                            // A few pixels of slack: smooth scrolling and
-                            // sub-pixel heights rarely land exactly on zero.
+                            // A few pixels of slack: sub-pixel heights rarely
+                            // land exactly on zero.
                             const atBottom =
                               el.scrollHeight - el.scrollTop - el.clientHeight < 24;
-                            historyPinnedRef.current = atBottom;
+                            const movedUp = el.scrollTop < historyLastTopRef.current;
+                            historyLastTopRef.current = el.scrollTop;
+                            // Only a deliberate scroll away from the end stops
+                            // the follow. Shrinking the container — which the
+                            // composer does as it grows — pushes the bottom
+                            // further down without the reader moving, and used
+                            // to be read as "they scrolled up".
+                            if (atBottom) historyPinnedRef.current = true;
+                            else if (movedUp) historyPinnedRef.current = false;
+                            const showJump = !atBottom && !historyPinnedRef.current;
                             setHistoryAtBottom((current) =>
-                              current === atBottom ? current : atBottom,
+                              current === !showJump ? current : !showJump,
                             );
                           }}
                         >
