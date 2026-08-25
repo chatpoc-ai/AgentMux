@@ -615,10 +615,11 @@ function findMentionQuery(text, caret) {
 }
 
 /**
- * Where a handle may end when no space follows it. Chinese prose has no
- * spaces, so "@后端，跑测试" arrives as a single token and the handle has to be
- * cut out of it. Hyphen and underscore are absent on purpose: handles contain
- * them, and cutting there would resolve "@agent-1" to "@agent".
+ * Where a handle may end when no space follows it. CJK prose puts no spaces
+ * around its punctuation, so an address and the sentence after it arrive as a
+ * single token and the handle has to be cut out of it. Hyphen and underscore
+ * are absent on purpose: handles contain them, and cutting there would
+ * resolve "@agent-1" to "@agent".
  */
 const MENTION_BOUNDARY = /[,.:;!?'"、，。：；！？…（）()[\]【】「」『』]/;
 
