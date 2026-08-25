@@ -296,7 +296,7 @@ const MODEL_CHIP_LIMIT = 12;
 
 /** WebSocket reconnect backoff: first retry after this, doubling up to the cap. */
 /** Bounds for the auto-growing composer, in px. */
-/** Bottom panel drag range; the lower bound is raised so the terminal fits. */
+/** Bottom panel drag range. */
 const BOTTOM_PANEL_MIN = 140;
 const BOTTOM_PANEL_MAX = 800;
 
@@ -344,6 +344,10 @@ function fallbackProviderOptions(t) {
 const PAGE_UP_SEQUENCE = `${String.fromCharCode(27)}[5~`;
 const PAGE_DOWN_SEQUENCE = `${String.fromCharCode(27)}[6~`;
 
+/**
+ * Only the size xterm starts at, before its first fit. The pane follows the
+ * window from then on; nothing is pinned to these.
+ */
 const TMUX_PANE_COLS = 80;
 const TMUX_PANE_ROWS = 24;
 
@@ -359,14 +363,6 @@ function isTypingElsewhere() {
   if (!el || el === document.body) return false;
   const tag = el.tagName;
   return tag === "INPUT" || tag === "TEXTAREA" || el.isContentEditable === true;
-}
-
-function syncXtermToTmuxDims(term) {
-  try {
-    term.resize(TMUX_PANE_COLS, TMUX_PANE_ROWS);
-  } catch {
-    /* ignore */
-  }
 }
 
 /** capture-pane often ends with extra newlines → phantom row below the real TUI line. */
@@ -738,7 +734,12 @@ const TerminalWorkspace = forwardRef(function TerminalWorkspace(
               /* terminal disposed while the write was queued */
             }
           });
-          syncXtermToTmuxDims(term);
+          // Deliberately no fit() here. The server pushes a snapshot right
+          // after it resizes a pane; fitting on receipt closed that into a
+          // loop — fit, report the size, server resizes, snapshot, fit again —
+          // which left the client and the pane at different widths, exactly
+          // the mismatch the fixed size used to avoid. Sizing belongs to the
+          // container observer alone.
         }
         window.requestAnimationFrame(() => {
         if (!terminalMatches(activeTerminalRef.current, projectId, terminalId)) {
@@ -792,14 +793,17 @@ const TerminalWorkspace = forwardRef(function TerminalWorkspace(
     let opened = false;
     let disposed = false;
 
-    const markReady = () => {
+    const fitTerminal = () => {
       if (disposed) return;
       try {
         fitAddon.fit();
-        syncXtermToTmuxDims(term);
       } catch {
-        /* ignore */
+        /* container not laid out yet */
       }
+    };
+
+    const markReady = () => {
+      if (disposed) return;
       window.requestAnimationFrame(() => {
         if (isTypingElsewhere()) return;
         try {
@@ -821,6 +825,12 @@ const TerminalWorkspace = forwardRef(function TerminalWorkspace(
         opened = false;
         return;
       }
+      // Size it now, and again after layout. This used to hang off the first
+      // onRender, which never fires for a pane that has produced no output —
+      // so an empty terminal kept xterm's construction size while the pane
+      // followed the window, and the two disagreed.
+      fitTerminal();
+      window.requestAnimationFrame(fitTerminal);
       const renderDisposable = term.onRender(() => {
         renderDisposable.dispose();
         markReady();
@@ -832,7 +842,10 @@ const TerminalWorkspace = forwardRef(function TerminalWorkspace(
         tryOpen();
         return;
       }
-      /* intentionally no fit()+resize here — see markReady comment */
+      // Re-fit so the pane follows the window. term.onResize fires only when
+      // the computed cols/rows actually change, so this does not spam the
+      // server with identical sizes.
+      fitTerminal();
     });
     resizeObserver.observe(host);
 
@@ -2255,75 +2268,9 @@ export default function App() {
    * that; shrinking below it crops rows the operator then has to scroll the
    * surface to reach.
    */
-  /**
-   * Panel height at which the terminal exactly fits.
-   *
-   * Computed as a correction to the current height rather than by adding up
-   * the card's parts. Summing was fragile twice over: it missed the
-   * scroller's own padding, and it read the content height from
-   * scrollHeight, which reports the container's height whenever nothing
-   * overflows — measuring the container with itself.
-   *
-   * The deficit is how much room the terminal is short of (negative when the
-   * card is padding itself with blank space); the panel moves by exactly that,
-   * in the opposite direction.
-   */
-  const minBottomPanelHeight = useEffectEvent(() => {
-    // terminalShellRef is on .terminal-surface — the whole card, title bar
-    // included — not on the scrolling .terminal-shell inside it.
-    const surface = terminalShellRef.current;
-    const panel = bottomPanelRef.current;
-    if (!surface || !panel) return null;
-    const scroller = surface.querySelector(".terminal-shell");
-    const xterm = surface.querySelector(".xterm");
-    if (!scroller || !xterm) return null;
-    const style = window.getComputedStyle(scroller);
-    const padding =
-      (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0);
-    const needed = xterm.getBoundingClientRect().height + padding;
-    const deficit = needed - scroller.clientHeight;
-    const target = panel.getBoundingClientRect().height - deficit;
-    return Math.max(
-      BOTTOM_PANEL_MIN,
-      Math.min(BOTTOM_PANEL_MAX, Math.ceil(target)),
-    );
-  });
 
-  // A stored height from a taller window, or a window the operator just
-  // shrank, would crop the terminal the same way dragging used to. Re-clamp
-  // whenever the window changes size, and once after the terminal has been
-  // laid out and its natural height is known.
-  useEffect(() => {
-    const clamp = () => {
-      // Not while the operator is dragging: the observer fires on every frame
-      // of the drag, and snapping back would fight them.
-      if (resizingRef.current) return;
-      const fit = minBottomPanelHeight();
-      if (fit == null) return;
-      // Settle exactly at the fit, in both directions. Below it the card pads
-      // itself with blank space; above it the terminal loses rows, and since
-      // the pane is a fixed 24 rows those rows buy nothing back.
-      setBottomPanelHeight((current) =>
-        current === fit ? current : Math.min(BOTTOM_PANEL_MAX, fit),
-      );
-    };
-    const surface = terminalShellRef.current;
-    // A single pass after mount is too early: xterm is attached asynchronously,
-    // so there is nothing to measure yet and the floor falls back to its
-    // minimum. Watching the card instead re-runs this once the terminal has
-    // actually been laid out, and again whenever the window changes size.
-    const observer =
-      surface && typeof ResizeObserver !== "undefined"
-        ? new ResizeObserver(clamp)
-        : null;
-    observer?.observe(surface);
-    window.addEventListener("resize", clamp);
-    clamp();
-    return () => {
-      observer?.disconnect();
-      window.removeEventListener("resize", clamp);
-    };
-  }, [minBottomPanelHeight, activeTerminalId]);
+
+
 
   useEffect(() => {
     const onMove = (event) => {
@@ -2336,10 +2283,11 @@ export default function App() {
         const next = Math.min(640, Math.max(200, window.innerWidth - event.clientX));
         setFilesPanelWidth(next);
       } else if (target === "bottom") {
-        const floor = minBottomPanelHeight() ?? BOTTOM_PANEL_MIN;
+        // A free range again: the terminal reflows to whatever height it is
+        // given, so there is no size it must land on.
         const next = Math.min(
           BOTTOM_PANEL_MAX,
-          Math.max(floor, window.innerHeight - event.clientY),
+          Math.max(BOTTOM_PANEL_MIN, window.innerHeight - event.clientY),
         );
         setBottomPanelHeight(next);
       }
