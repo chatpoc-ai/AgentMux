@@ -8,6 +8,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { createPortal } from "react-dom";
 import { Terminal } from "xterm";
 import { FitAddon } from "xterm-addon-fit";
 import "xterm/css/xterm.css";
@@ -109,7 +110,12 @@ const I18N = {
     closePreview: "Close preview",
     back: "Back",
     currentProjectNoEvents: "This project has no collaboration events yet.",
-    inputPlaceholder: "Type command or text, Enter to send, Shift+Enter for newline",
+    inputPlaceholder:
+      "Type command or text, @ to address a terminal, Enter to send, Shift+Enter for newline",
+    mentionListLabel: "Terminals you can address",
+    mentionEmpty: "No terminal matches",
+    mentionHint: "↑↓ to choose, Enter to insert",
+    mentionSwitched: "Switched to {name}",
     english: "English",
     chinese: "中文",
     language: "Language",
@@ -233,7 +239,11 @@ const I18N = {
     closePreview: "关闭预览",
     back: "返回上级",
     currentProjectNoEvents: "当前项目还没有协作事件。",
-    inputPlaceholder: "输入命令或文本，Enter 发送，Shift+Enter 换行",
+    inputPlaceholder: "输入命令或文本，@ 指定终端，Enter 发送，Shift+Enter 换行",
+    mentionListLabel: "可指定的终端",
+    mentionEmpty: "没有匹配的终端",
+    mentionHint: "↑↓ 选择，Enter 插入",
+    mentionSwitched: "已切换到 {name}",
     english: "English",
     chinese: "中文",
     language: "语言",
@@ -493,6 +503,162 @@ function terminalLabel(terminal, t) {
   const label = String(terminal?.label ?? "");
   const match = /^Agent (\d+)$/.exec(label);
   return match ? t("agentLabel", { n: match[1] }) : label;
+}
+
+/**
+ * Mentions address a terminal by the name the sidebar shows, with its spaces
+ * closed up. Deriving the handle from the visible label rather than slugging
+ * it to ASCII keeps non-Latin names usable — a strict slug would erase a
+ * Chinese label entirely and leave nothing to type.
+ */
+function mentionHandle(label) {
+  return String(label ?? "")
+    .trim()
+    .replace(/[\s@]+/g, "-");
+}
+
+/**
+ * One entry per terminal across every project, each carrying the aliases it
+ * answers to. Cross-project mentions are the point: addressing a terminal is
+ * also how you switch to it, so the list cannot stop at the active project.
+ */
+function buildMentionTargets(projects, t) {
+  const targets = [];
+  for (const project of projects || []) {
+    for (const terminal of project.terminals || []) {
+      const label = terminalLabel(terminal, t);
+      targets.push({
+        id: terminal.id,
+        projectId: project.id,
+        projectName: project.name,
+        label,
+        // The stored name, which stays "Agent 3" while the interface is in
+        // Chinese. Kept so "@ag" still narrows the list for someone typing on
+        // a Latin keyboard, and so the alias below survives a language switch.
+        rawLabel: String(terminal.label ?? ""),
+        cli: terminal.cli || "",
+        index: terminal.index ?? 0,
+        handle: mentionHandle(label),
+      });
+    }
+  }
+  // Two projects can each hold an "Agent 1". Disambiguate with a slice of the
+  // terminal id, which stays put when the other one is renamed.
+  const seen = new Map();
+  for (const target of targets) {
+    seen.set(target.handle, (seen.get(target.handle) || 0) + 1);
+  }
+  for (const target of targets) {
+    if (seen.get(target.handle) > 1) {
+      target.handle = `${target.handle}-${target.id.slice(0, 4)}`;
+    }
+  }
+  return targets;
+}
+
+/**
+ * Alias -> target, with every ambiguous alias dropped rather than resolved to
+ * an arbitrary winner. Sending to the wrong agent is worse than not resolving:
+ * the text lands in a pane the reader is not watching.
+ */
+function buildMentionAliases(targets) {
+  const claims = new Map();
+  const claim = (alias, target) => {
+    const key = String(alias || "").toLowerCase();
+    if (!key) return;
+    const current = claims.get(key);
+    if (current === undefined) claims.set(key, target);
+    else if (current && current.id !== target.id) claims.set(key, null);
+  };
+  for (const target of targets) {
+    claim(target.handle, target);
+    claim(mentionHandle(target.label), target);
+    claim(mentionHandle(target.rawLabel), target);
+    // Provider aliases: "@codex" when there is only one, "@codex-2" always.
+    if (target.cli) {
+      claim(target.cli, target);
+      claim(`${target.cli}-${target.index + 1}`, target);
+    }
+  }
+  const aliases = new Map();
+  for (const [key, target] of claims) {
+    if (target) aliases.set(key, target);
+  }
+  return aliases;
+}
+
+/**
+ * The "@..." token the caret currently sits in, or null. Requires whitespace
+ * before the "@" so an email address in the message never opens the menu.
+ */
+function findMentionQuery(text, caret) {
+  const upto = String(text ?? "").slice(0, caret);
+  const at = upto.lastIndexOf("@");
+  if (at < 0) return null;
+  const before = at > 0 ? upto[at - 1] : "";
+  if (before && !/\s/.test(before)) return null;
+  const query = upto.slice(at + 1);
+  if (/[\s@]/.test(query)) return null;
+  return { start: at, end: caret, query };
+}
+
+/**
+ * Where a handle may end when no space follows it. Chinese prose has no
+ * spaces, so "@后端，跑测试" arrives as a single token and the handle has to be
+ * cut out of it. Hyphen and underscore are absent on purpose: handles contain
+ * them, and cutting there would resolve "@agent-1" to "@agent".
+ */
+const MENTION_BOUNDARY = /[,.:;!?'"、，。：；！？…（）()[\]【】「」『』]/;
+
+/**
+ * First resolvable mention in the text, with the span it occupies so the
+ * caller can lift it out. Unresolvable "@words" are left alone — they are
+ * ordinary text, and rewriting them would be a surprise.
+ */
+function resolveMentionTarget(text, aliases) {
+  if (!aliases || !aliases.size) return null;
+  const pattern = /(^|\s)@([^\s@]+)/g;
+  const source = String(text ?? "");
+  let match;
+  while ((match = pattern.exec(source)) !== null) {
+    const raw = match[2];
+    const start = match.index + match[1].length;
+    const exact = aliases.get(raw.toLowerCase());
+    if (exact) return { target: exact, start, end: start + 1 + raw.length };
+    // Longest prefix that ends on a punctuation boundary. Longest first so
+    // "@agent-12" is never read as "@agent-1", and boundary-only so a handle
+    // is not clipped out of the middle of an ordinary word.
+    for (let cut = raw.length - 1; cut > 0; cut -= 1) {
+      if (!MENTION_BOUNDARY.test(raw[cut])) continue;
+      const candidate = aliases.get(raw.slice(0, cut).toLowerCase());
+      if (candidate) return { target: candidate, start, end: start + 1 + cut };
+    }
+  }
+  return null;
+}
+
+/** Drops the mention span and closes the gap it leaves behind. */
+function stripMention(text, span) {
+  const source = String(text ?? "");
+  const head = source.slice(0, span.start);
+  // "@codex, look at this" — the comma punctuated the address, so it goes with
+  // it rather than leading the message the agent receives.
+  const tail = source.slice(span.end).replace(/^[ \t]*[,，、:：;；][ \t]*/, " ");
+  return `${head}${tail}`.replace(/[ \t]{2,}/g, " ").trim();
+}
+
+function matchesMentionQuery(target, query) {
+  if (!query) return true;
+  const needle = query.toLowerCase();
+  return [
+    target.handle,
+    target.label,
+    target.rawLabel,
+    target.cli,
+    target.projectName,
+  ].some((field) =>
+    String(field || "").toLowerCase().includes(needle),
+  );
 }
 
 function formatEventOrigin(event, project, t) {
@@ -911,6 +1077,11 @@ const TerminalWorkspace = forwardRef(function TerminalWorkspace(
           );
         }
         window.requestAnimationFrame(() => {
+          // Same guard as the snapshot and ready paths. This effect re-runs
+          // whenever the project object is replaced — which activity alone
+          // does — so without it the pane pulls the caret out of the composer
+          // mid-sentence while an agent is producing output.
+          if (isTypingElsewhere()) return;
           try {
             term.focus();
           } catch {
@@ -2396,30 +2567,146 @@ export default function App() {
     setNewTerminalDialog(null);
   };
 
+  // { start, end, query, index } while an "@..." token is under the caret.
+  const [mentionMenu, setMentionMenu] = useState(null);
+
+  const mentionTargets = useMemo(() => buildMentionTargets(projects, t), [projects, t]);
+  const mentionAliases = useMemo(
+    () => buildMentionAliases(mentionTargets),
+    [mentionTargets],
+  );
+  const mentionMatches = useMemo(() => {
+    if (!mentionMenu) return [];
+    return mentionTargets.filter((target) =>
+      matchesMentionQuery(target, mentionMenu.query),
+    );
+  }, [mentionMenu, mentionTargets]);
+  const mentionActive = mentionMenu ? mentionMatches[mentionMenu.index] ?? null : null;
+
+  // Recomputed from the caret rather than tracked incrementally: the caret can
+  // move by click, arrow, or undo, and a menu that only followed typing would
+  // keep offering completions for a token the reader has already left.
+  // The token Escape was pressed on. Without it the keyup that follows the
+  // Escape keydown re-opens the menu on the very same token, and dismissing
+  // becomes impossible.
+  const mentionDismissedRef = useRef(null);
+
+  const syncMentionMenu = (element) => {
+    if (!element) return;
+    const next = findMentionQuery(element.value, element.selectionStart ?? 0);
+    const dismissed = mentionDismissedRef.current;
+    if (!next) mentionDismissedRef.current = null;
+    else if (
+      dismissed &&
+      dismissed.start === next.start &&
+      dismissed.query === next.query
+    ) {
+      setMentionMenu(null);
+      return;
+    } else {
+      // Editing the token is a fresh request for suggestions.
+      mentionDismissedRef.current = null;
+    }
+    setMentionMenu((current) => {
+      if (!next) return null;
+      // Same token, same query: keep whatever row the reader had highlighted.
+      if (current && current.start === next.start && current.query === next.query) {
+        return { ...current, end: next.end };
+      }
+      return { ...next, index: 0 };
+    });
+  };
+
+  // Measured position for the portal below. The menu cannot live inside the
+  // composer: the bottom panel clips its overflow, so an absolutely positioned
+  // menu is cut off at the panel's top edge.
+  const [mentionAnchor, setMentionAnchor] = useState(null);
+
+  useLayoutEffect(() => {
+    if (!mentionMenu) {
+      setMentionAnchor(null);
+      return;
+    }
+    const measure = () => {
+      const field = composerInputRef.current?.parentElement;
+      if (!field) return;
+      const rect = field.getBoundingClientRect();
+      setMentionAnchor({
+        left: rect.left,
+        width: rect.width,
+        // Opens upward: the composer sits at the bottom of the window.
+        bottom: window.innerHeight - rect.top + 8,
+        maxHeight: Math.max(120, rect.top - 24),
+      });
+    };
+    measure();
+    // A fixed-position element does not follow the field on its own, so a
+    // window resize would leave the menu behind at the old coordinates.
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+  }, [mentionMenu, composerText, bottomPanelHeight, sidebarWidth]);
+
+  const applyMention = (target) => {
+    if (!mentionMenu || !target) return;
+    const before = composerText.slice(0, mentionMenu.start);
+    const after = composerText.slice(mentionMenu.end);
+    // The trailing space is what closes the token, so the menu does not
+    // immediately reopen on the handle that was just inserted.
+    const insert = `@${target.handle} `;
+    setComposerText(`${before}${insert}${after}`);
+    setMentionMenu(null);
+    const caret = before.length + insert.length;
+    requestAnimationFrame(() => {
+      const element = composerInputRef.current;
+      if (!element) return;
+      element.focus();
+      element.setSelectionRange(caret, caret);
+    });
+  };
+
   const sendComposer = () => {
-    if (!activeProjectId || !activeTerminalId) {
+    const mention = resolveMentionTarget(composerText, mentionAliases);
+    const target = mention?.target ?? null;
+    const projectId = target ? target.projectId : activeProjectId;
+    const terminalId = target ? target.id : activeTerminalId;
+    if (!projectId || !terminalId) {
       setStatus(t("terminalHint"));
       return;
     }
-    const text = composerText.trim();
-    if (!text) return;
+    // Addressing a terminal is also how you move to it: the reply lands in
+    // that pane, and reading it should not need a second trip to the sidebar.
+    if (target && (projectId !== activeProjectId || terminalId !== activeTerminalId)) {
+      setActiveProjectId(projectId);
+      setActiveTerminalId(terminalId);
+    }
+    const text = (mention ? stripMention(composerText, mention) : composerText).trim();
+    if (!text) {
+      // "@name" alone is a request to switch, not an empty message to send.
+      setMentionMenu(null);
+      if (!target) return;
+      setComposerText("");
+      setStatus(t("mentionSwitched", { name: target.label }));
+      composerInputRef.current?.focus();
+      return;
+    }
     send({
       type: "emit_event",
-      projectId: activeProjectId,
+      projectId,
       event: {
         type: "user_message",
         from: "browser",
-        to: activeTerminalId,
+        to: terminalId,
         text,
         appendEnter: true,
       },
     });
     send({
       type: "request_snapshot",
-      projectId: activeProjectId,
-      terminalId: activeTerminalId,
+      projectId,
+      terminalId,
     });
     setComposerText("");
+    setMentionMenu(null);
     // Sending is a deliberate move to the present, so it re-arms the follow
     // even if the reader had scrolled up: their own message, and the reply to
     // it, are what they now want to see.
@@ -2431,6 +2718,39 @@ export default function App() {
   };
 
   const handleComposerKeyDown = (event) => {
+    // While the menu is open it owns the navigation keys. Enter completes the
+    // mention instead of sending, which is the one place the two collide.
+    if (mentionMenu && mentionMatches.length) {
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        const step = event.key === "ArrowDown" ? 1 : -1;
+        setMentionMenu((current) =>
+          current
+            ? {
+                ...current,
+                index:
+                  (current.index + step + mentionMatches.length) % mentionMatches.length,
+              }
+            : current,
+        );
+        return;
+      }
+      if (event.key === "Enter" || event.key === "Tab") {
+        if (event.nativeEvent.isComposing) return;
+        event.preventDefault();
+        applyMention(mentionActive);
+        return;
+      }
+    }
+    if (mentionMenu && event.key === "Escape") {
+      event.preventDefault();
+      mentionDismissedRef.current = {
+        start: mentionMenu.start,
+        query: mentionMenu.query,
+      };
+      setMentionMenu(null);
+      return;
+    }
     if (event.key !== "Enter" || event.shiftKey) return;
     if (event.nativeEvent.isComposing) return;
     event.preventDefault();
@@ -3024,13 +3344,85 @@ export default function App() {
                             inside it — send on the right today, attachments or
                             voice on the left later. */}
                         <div className="composer-field">
+                        {/* Anchored to the field, opening upward: the composer
+                            sits at the bottom of the window, so a menu that
+                            dropped down would land off-screen. */}
+                        {mentionMenu && mentionAnchor
+                          ? createPortal(
+                          <div
+                            className="mention-menu"
+                            role="listbox"
+                            aria-label={t("mentionListLabel")}
+                            style={{
+                              left: `${mentionAnchor.left}px`,
+                              width: `${mentionAnchor.width}px`,
+                              bottom: `${mentionAnchor.bottom}px`,
+                              maxHeight: `${mentionAnchor.maxHeight}px`,
+                            }}
+                          >
+                            {mentionMatches.length ? (
+                              <>
+                                {mentionMatches.map((target, position) => (
+                                  <button
+                                    key={`${target.projectId}-${target.id}`}
+                                    type="button"
+                                    role="option"
+                                    aria-selected={position === mentionMenu.index}
+                                    className={`mention-item ${
+                                      position === mentionMenu.index ? "active" : ""
+                                    }`}
+                                    // Keeps focus in the textarea, so the click
+                                    // lands before a blur can close the menu.
+                                    onMouseDown={(event) => event.preventDefault()}
+                                    onMouseEnter={() =>
+                                      setMentionMenu((current) =>
+                                        current ? { ...current, index: position } : current,
+                                      )
+                                    }
+                                    onClick={() => applyMention(target)}
+                                  >
+                                    <span
+                                      className={`thread-dot ${
+                                        terminalStatuses[target.id] || "idle"
+                                      }`}
+                                      aria-hidden="true"
+                                    />
+                                    <span className="mention-name">{target.label}</span>
+                                    {target.cli ? (
+                                      <span className="mention-cli">{target.cli}</span>
+                                    ) : null}
+                                    <span className="mention-handle">@{target.handle}</span>
+                                    {projects.length > 1 ? (
+                                      <span className="mention-project">
+                                        {target.projectName}
+                                      </span>
+                                    ) : null}
+                                  </button>
+                                ))}
+                                <div className="mention-hint">{t("mentionHint")}</div>
+                              </>
+                            ) : (
+                              <div className="mention-empty">{t("mentionEmpty")}</div>
+                            )}
+                          </div>,
+                          document.body,
+                            )
+                          : null}
                         <textarea
                           id="composer-input"
                           ref={composerInputRef}
                           rows={1}
                           className="composer-input"
                           value={composerText}
-                          onChange={(event) => setComposerText(event.target.value)}
+                          onChange={(event) => {
+                            setComposerText(event.target.value);
+                            syncMentionMenu(event.target);
+                          }}
+                          // The caret also moves by arrow, click, and undo, and
+                          // the menu has to follow it, not only the typing.
+                          onKeyUp={(event) => syncMentionMenu(event.currentTarget)}
+                          onClick={(event) => syncMentionMenu(event.currentTarget)}
+                          onBlur={() => setMentionMenu(null)}
                           aria-label={t("inputLabel")}
                           placeholder={t("inputPlaceholder")}
                           onKeyDown={handleComposerKeyDown}

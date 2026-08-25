@@ -11,6 +11,10 @@ Terminals in the same project can run different CLIs and different models at
 the same time, which is the point: one pane on Claude, one on Codex, one on
 Cursor, all working in the same repo.
 
+Type `@` in the message box to address one of them by name. The message goes
+to that terminal and the view follows it, so switching agents mid-thought does
+not mean going back to the sidebar first.
+
 ## Why run more than one
 
 ### The cost is a ceiling, not a meter
