@@ -2,6 +2,8 @@
   "name": "agentmux",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
+  "author": "Rong Gu",
   "description": "Web UI for multiple tmux sessions running Cursor, Codex, or Claude agent CLIs",
   "main": "server/index.js",
   "bin": {

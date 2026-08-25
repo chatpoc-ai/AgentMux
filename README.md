@@ -160,3 +160,7 @@ an idle Claude Code pane redraws continuously while an idle Codex pane emits
 nothing at all.
 
 Further design notes are in [`docs/`](docs/), in English and Chinese.
+
+## License
+
+[MIT](LICENSE) © 2026 Rong Gu
