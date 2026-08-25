@@ -88,6 +88,7 @@ const I18N = {
     chooseThisFolder: "Choose this folder",
     linkThisDir: "Link this directory",
     newFolder: "New folder",
+    jumpToLatest: "Jump to latest",
     status_idle: "Idle",
     status_working: "Working",
     status_waiting: "Waiting for you",
@@ -211,6 +212,7 @@ const I18N = {
     chooseThisFolder: "选择这个文件夹",
     linkThisDir: "关联这个目录",
     newFolder: "新建文件夹",
+    jumpToLatest: "回到最新",
     status_idle: "空闲",
     status_working: "工作中",
     status_waiting: "等你回应",
@@ -711,8 +713,17 @@ const TerminalWorkspace = forwardRef(function TerminalWorkspace(
       try {
         term.reset();
         if (data) {
-          term.write(normalizeSnapshotPayload(data));
-          term.scrollToBottom();
+          // scrollToBottom has to wait for the write callback: write() queues
+          // the data and parses it asynchronously, so scrolling immediately
+          // after moves a viewport that has not received the rows yet, leaving
+          // a freshly opened terminal parked partway up.
+          term.write(normalizeSnapshotPayload(data), () => {
+            try {
+              term.scrollToBottom();
+            } catch {
+              /* terminal disposed while the write was queued */
+            }
+          });
           syncXtermToTmuxDims(term);
         }
         window.requestAnimationFrame(() => {
@@ -2495,6 +2506,10 @@ export default function App() {
   const activeHistory = activeProject ? projectHistories[activeProject.id] || [] : [];
   const composerShellRef = useRef(null);
   const historyEndRef = useRef(null);
+  const historyRef = useRef(null);
+  /** Mirrors historyAtBottom for effects that must not re-run when it flips. */
+  const historyPinnedRef = useRef(true);
+  const [historyAtBottom, setHistoryAtBottom] = useState(true);
   const previewFile =
     selectedFile && fileContentState[selectedFile.projectId]?.file
       ? fileContentState[selectedFile.projectId].file
@@ -2509,10 +2524,42 @@ export default function App() {
     ? `${selectedFile.rootId || "main"}:${selectedFile.path}`
     : "";
 
+  /**
+   * Jump the history to its newest end.
+   *
+   * Instant, not smooth. Smooth scrolling is advisory — it is silently ignored
+   * in some environments (observed here), and a follow that quietly does
+   * nothing is worse than one without animation.
+   */
+  const scrollHistoryToBottom = () => {
+    const el = historyRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+    historyPinnedRef.current = true;
+    setHistoryAtBottom(true);
+  };
+
+  /**
+   * Follow new messages, but only while the reader is already at the bottom.
+   *
+   * This used to scroll unconditionally, so a message arriving while the
+   * operator was reading further up yanked them back down mid-sentence.
+   */
   useEffect(() => {
-    const target = composerShellRef.current || historyEndRef.current;
-    target?.scrollIntoView?.({ block: "end", behavior: "smooth" });
-  }, [activeProjectId, activeHistory]);
+    if (!historyPinnedRef.current) return;
+    const el = historyRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, [activeHistory]);
+
+  // Switching project is a fresh conversation: always start at the newest end,
+  // without the animation, and re-arm following.
+  useEffect(() => {
+    historyPinnedRef.current = true;
+    setHistoryAtBottom(true);
+    const el = historyRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [activeProjectId]);
 
   useEffect(() => {
     if (!activeProject) return;
@@ -2839,7 +2886,22 @@ export default function App() {
                       }}
                     >
                       <div className="composer-shell" ref={composerShellRef}>
-                        <div className="composer-history" aria-label={t("collaborationHistory")}>
+                        <div
+                          className="composer-history"
+                          ref={historyRef}
+                          aria-label={t("collaborationHistory")}
+                          onScroll={(event) => {
+                            const el = event.currentTarget;
+                            // A few pixels of slack: smooth scrolling and
+                            // sub-pixel heights rarely land exactly on zero.
+                            const atBottom =
+                              el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+                            historyPinnedRef.current = atBottom;
+                            setHistoryAtBottom((current) =>
+                              current === atBottom ? current : atBottom,
+                            );
+                          }}
+                        >
                           {activeHistory.length ? (
                             activeHistory.map((event) => {
                               const text = summarizeEvent(event);
@@ -2889,6 +2951,19 @@ export default function App() {
                           )}
                           <div ref={historyEndRef} />
                         </div>
+                        {/* Only while the reader has scrolled away from the
+                            newest end; following is automatic otherwise. */}
+                        {!historyAtBottom ? (
+                          <button
+                            type="button"
+                            className="history-jump"
+                            onClick={() => scrollHistoryToBottom()}
+                          >
+                            {t("jumpToLatest")}
+                            <span aria-hidden="true">↓</span>
+                          </button>
+                        ) : null}
+
                         {/* The field wraps the textarea so controls can sit
                             inside it — send on the right today, attachments or
                             voice on the left later. */}
