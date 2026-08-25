@@ -22,8 +22,15 @@ body {
 }
 
 body.is-resizing {
-  cursor: col-resize;
   user-select: none;
+}
+
+body.is-resizing-col {
+  cursor: col-resize;
+}
+
+body.is-resizing-row {
+  cursor: row-resize;
 }
 
 button,
@@ -696,13 +703,15 @@ body.is-resizing .files-resizer {
   position: relative;
 }
 
+/* The visible line is 1px; this widens what the pointer can actually grab. */
 .terminal-bottom-resizer::after {
   content: "";
   position: absolute;
   left: 0;
   right: 0;
-  top: -6px;
-  bottom: -6px;
+  top: -8px;
+  bottom: -8px;
+  cursor: row-resize;
 }
 
 .terminal-bottom-resizer:hover,
@@ -755,6 +764,10 @@ body.is-resizing .terminal-bottom-resizer {
 
 .composer-card {
   flex: 1;
+}
+
+.composer-input:focus {
+  border-color: rgba(34, 38, 48, 0.24);
 }
 
 .composer-form {
@@ -904,10 +917,12 @@ body.is-resizing .terminal-bottom-resizer {
   height: auto;
   box-sizing: border-box;
   resize: none;
-  border: 0;
+  /* Reads as a field rather than as more of the transcript: the history above
+     sits on the panel's own background, so the composer needs its own. */
+  border: 1px solid rgba(34, 38, 48, 0.1);
   border-radius: 16px;
   padding: 12px 12px 10px;
-  background: transparent;
+  background: #ffffff;
   color: #232833;
   font-size: 1rem;
   line-height: 1.55;

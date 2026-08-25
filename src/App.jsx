@@ -294,6 +294,10 @@ const MODEL_CHIP_LIMIT = 12;
 
 /** WebSocket reconnect backoff: first retry after this, doubling up to the cap. */
 /** Bounds for the auto-growing composer, in px. */
+/** Bottom panel drag range; the lower bound is raised so the terminal fits. */
+const BOTTOM_PANEL_MIN = 140;
+const BOTTOM_PANEL_MAX = 800;
+
 const COMPOSER_MIN_HEIGHT = 44;
 const COMPOSER_MAX_HEIGHT = 200;
 
@@ -1219,7 +1223,11 @@ export default function App() {
   const [bottomPanelHeight, setBottomPanelHeight] = useState(() => {
     const saved = window.localStorage.getItem("agentmux.bottomPanelHeight");
     const parsed = Number(saved);
-    return Number.isFinite(parsed) ? Math.min(800, Math.max(320, parsed)) : 760;
+    // Only a sanity range here; the real floor depends on the terminal's
+    // natural height, which is not measurable yet at this point.
+    return Number.isFinite(parsed)
+      ? Math.min(BOTTOM_PANEL_MAX, Math.max(BOTTOM_PANEL_MIN, parsed))
+      : 360;
   });
   const [composerText, setComposerText] = useState("");
   const [projectHistories, setProjectHistories] = useState({});
@@ -2189,6 +2197,64 @@ export default function App() {
     };
   }, []);
 
+  /**
+   * Smallest bottom panel that still leaves the terminal fully visible.
+   *
+   * The pane is pinned to 80x24 and never resized (see the note on
+   * _spawnTerminal), so the terminal has one natural height. Growing the area
+   * beyond it only adds blank space, and the divider used to allow exactly
+   * that; shrinking below it crops rows the operator then has to scroll the
+   * surface to reach.
+   */
+  const minBottomPanelHeight = useEffectEvent(() => {
+    // terminalShellRef is on .terminal-surface — the whole card, title bar
+    // included — not on the scrolling .terminal-shell inside it.
+    const surface = terminalShellRef.current;
+    const panel = bottomPanelRef.current;
+    if (!surface || !panel) return BOTTOM_PANEL_MIN;
+    const scroller = surface.querySelector(".terminal-shell");
+    const xterm = surface.querySelector(".xterm");
+    const container = panel.parentElement;
+    if (!scroller || !xterm || !container) return BOTTOM_PANEL_MIN;
+    const height = (el) => el.getBoundingClientRect().height;
+    // Everything in the card that is not the terminal itself.
+    const chrome = height(surface) - height(scroller);
+    const needed = height(xterm) + chrome;
+    return Math.max(
+      BOTTOM_PANEL_MIN,
+      Math.round(height(container) - needed - 2),
+    );
+  });
+
+  // A stored height from a taller window, or a window the operator just
+  // shrank, would crop the terminal the same way dragging used to. Re-clamp
+  // whenever the window changes size, and once after the terminal has been
+  // laid out and its natural height is known.
+  useEffect(() => {
+    const clamp = () => {
+      const floor = minBottomPanelHeight();
+      setBottomPanelHeight((current) =>
+        current < floor ? Math.min(BOTTOM_PANEL_MAX, floor) : current,
+      );
+    };
+    const surface = terminalShellRef.current;
+    // A single pass after mount is too early: xterm is attached asynchronously,
+    // so there is nothing to measure yet and the floor falls back to its
+    // minimum. Watching the card instead re-runs this once the terminal has
+    // actually been laid out, and again whenever the window changes size.
+    const observer =
+      surface && typeof ResizeObserver !== "undefined"
+        ? new ResizeObserver(clamp)
+        : null;
+    observer?.observe(surface);
+    window.addEventListener("resize", clamp);
+    clamp();
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", clamp);
+    };
+  }, [minBottomPanelHeight, activeTerminalId]);
+
   useEffect(() => {
     const onMove = (event) => {
       if (!resizingRef.current) return;
@@ -2200,14 +2266,18 @@ export default function App() {
         const next = Math.min(640, Math.max(200, window.innerWidth - event.clientX));
         setFilesPanelWidth(next);
       } else if (target === "bottom") {
-        const next = Math.min(800, Math.max(140, window.innerHeight - event.clientY));
+        const floor = minBottomPanelHeight();
+        const next = Math.min(
+          BOTTOM_PANEL_MAX,
+          Math.max(floor, window.innerHeight - event.clientY),
+        );
         setBottomPanelHeight(next);
       }
     };
     const onUp = () => {
       resizingRef.current = false;
       resizeTargetRef.current = null;
-      document.body.classList.remove("is-resizing");
+      document.body.classList.remove("is-resizing", "is-resizing-row", "is-resizing-col");
     };
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
@@ -2221,6 +2291,11 @@ export default function App() {
     resizingRef.current = true;
     resizeTargetRef.current = target;
     document.body.classList.add("is-resizing");
+    // The bottom divider moves vertically; without this it showed the
+    // left-right cursor while dragging, the opposite of what it does.
+    document.body.classList.add(
+      target === "bottom" ? "is-resizing-row" : "is-resizing-col",
+    );
   };
 
   const openPicker = async () => {
