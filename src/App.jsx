@@ -428,6 +428,15 @@ function IconTerminal() {
   );
 }
 
+function IconSend() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M19 7v4a3 3 0 0 1-3 3H6" />
+      <path d="m9.5 10.5-3.5 3.5 3.5 3.5" />
+    </svg>
+  );
+}
+
 function IconSettings() {
   return (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
@@ -1489,10 +1498,23 @@ export default function App() {
     // here rather than as a CSS percentage: a percentage resolves against a
     // parent this element sizes, which feeds back and runs away.
     const shell = composerShellRef.current;
-    const cap = Math.max(
+    let cap = Math.max(
       COMPOSER_MIN_HEIGHT,
       Math.min(COMPOSER_MAX_HEIGHT, Math.round((shell?.clientHeight || 320) * 0.4)),
     );
+    // Snap the cap down to a whole number of lines. Stopping mid-line leaves a
+    // sliced row at the bottom edge, which reads as clipped rather than as
+    // scrollable.
+    const style = window.getComputedStyle(el);
+    const lineHeight = parseFloat(style.lineHeight);
+    const padding = parseFloat(style.paddingTop) + parseFloat(style.paddingBottom);
+    if (Number.isFinite(lineHeight) && lineHeight > 0) {
+      const lines = Math.max(1, Math.floor((cap - padding) / lineHeight));
+      // Ceil, not round: rounding down leaves the last line a fraction short,
+      // which shows as a sliced row exactly like the mid-line stop it is meant
+      // to avoid.
+      cap = Math.max(COMPOSER_MIN_HEIGHT, Math.ceil(padding + lines * lineHeight));
+    }
     el.style.height = `${Math.max(COMPOSER_MIN_HEIGHT, Math.min(content, cap))}px`;
   });
 
@@ -2867,6 +2889,10 @@ export default function App() {
                           )}
                           <div ref={historyEndRef} />
                         </div>
+                        {/* The field wraps the textarea so controls can sit
+                            inside it — send on the right today, attachments or
+                            voice on the left later. */}
+                        <div className="composer-field">
                         <textarea
                           id="composer-input"
                           ref={composerInputRef}
@@ -2878,13 +2904,15 @@ export default function App() {
                           placeholder={t("inputPlaceholder")}
                           onKeyDown={handleComposerKeyDown}
                         />
-                        <div className="composer-toolbar">
                           <button
                             type="button"
                             className="composer-send"
                             onClick={sendComposer}
+                            disabled={!composerText.trim()}
+                            title={t("send")}
+                            aria-label={t("send")}
                           >
-                            {t("send")}
+                            <IconSend />
                           </button>
                         </div>
                       </div>

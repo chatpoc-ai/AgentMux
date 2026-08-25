@@ -766,7 +766,19 @@ body.is-resizing .terminal-bottom-resizer {
   flex: 1;
 }
 
-.composer-input:focus {
+/* Reads as a field rather than as more of the transcript: the history above
+   sits on the panel's own background, so the composer needs its own. */
+.composer-field {
+  position: relative;
+  flex: none;
+  display: flex;
+  border: 1px solid rgba(34, 38, 48, 0.1);
+  border-radius: 16px;
+  background: #ffffff;
+  transition: border-color 120ms ease;
+}
+
+.composer-field:focus-within {
   border-color: rgba(34, 38, 48, 0.24);
 }
 
@@ -917,12 +929,11 @@ body.is-resizing .terminal-bottom-resizer {
   height: auto;
   box-sizing: border-box;
   resize: none;
-  /* Reads as a field rather than as more of the transcript: the history above
-     sits on the panel's own background, so the composer needs its own. */
-  border: 1px solid rgba(34, 38, 48, 0.1);
+  border: 0;
   border-radius: 16px;
-  padding: 12px 12px 10px;
-  background: #ffffff;
+  /* Right padding keeps the text clear of the send button inside the field. */
+  padding: 12px 48px 10px 12px;
+  background: transparent;
   color: #232833;
   font-size: 1rem;
   line-height: 1.55;
@@ -958,34 +969,38 @@ body.is-resizing .terminal-bottom-resizer {
   text-overflow: ellipsis;
 }
 
-.composer-toolbar {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-  color: #717784;
-}
-
+/* Sits inside the field, pinned to the bottom-right so it stays put as the
+   textarea grows. */
 .composer-send {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  border-radius: 999px;
-  padding: 9px 12px;
-  background: rgba(34, 38, 48, 0.05);
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  border-radius: 10px;
+  background: rgba(34, 38, 48, 0.06);
   color: #6f7581;
-  font-size: 0.92rem;
-  font-weight: 600;
+  transition: background-color 120ms ease, color 120ms ease, opacity 120ms ease;
 }
 
-.composer-send {
-  margin-left: auto;
+.composer-send svg {
+  width: 17px;
+  height: 17px;
+}
+
+.composer-send:not(:disabled):hover {
   background: #1f232a;
   color: #ffffff;
 }
 
-.composer-send:hover {
-  background: #11151b;
+.composer-send:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 
 .mac-chrome {
