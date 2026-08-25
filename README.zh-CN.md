@@ -6,6 +6,18 @@
 
 **同一个项目里的终端可以跑不同的 CLI 和不同的模型**，这正是它的意义：一个 pane 跑 Claude，一个跑 Codex，一个跑 Cursor，同时在一个仓库里干活。
 
+## 为什么要同时跑多个
+
+**两份固定订阅比一份按量计费更便宜。** Claude Code 包含在 Claude Pro 里，[每月 $20](https://claude.com/pricing)；Codex 包含在 ChatGPT Plus 里，[每月 $20](https://learn.chatgpt.com/docs/pricing)。而在 Cursor 里，Claude、GPT 这类第三方模型从独立的额度池扣费，按"模型的 API 原价"计费，Cursor 自己的文档写着每日重度 agent 用户的用量花费是[每月 $60–100](https://cursor.com/docs/account/pricing)，这还不含席位费。四十美元封顶，对二十美元加一个会浮动的数。
+
+按量计费还意味着账单取决于**工具发出多少 token**，而不只取决于哪个模型在回答——两个工具指向同一个模型，同样的任务花费可能相差很大。有一次[公开对比](https://www.futureproofing.dev/resources/ai-native-team/claude-code-vs-cursor-token-efficiency-2026)在同一个 Next.js 项目上测得：Claude Code 用了 33K token，Cursor Agent 用了 188K。请连同原作者的保留一起看——那是单次非受控测试，而且两边分别跑在 Opus 和 GPT-5 上，模型差异和工具差异混在一起。
+
+**一边被限流不等于全部停摆。** 两家订阅都按滚动窗口计量并有周配额——Codex 会把自己的剩余额度直接打在状态栏上。旁边那个 pane 里已经跑着另一个 CLI，撞到窗口时只是换个 pane，而不是停下来。
+
+**模型之间并不等价。** 让它们并排待在同一个仓库里，就能各自做擅长的事；拿不准的问题可以换一个再问一遍，不用重新交代项目背景。
+
+这些都不需要这个应用——开两个 tmux 窗口一样能做。真正麻烦的是**盯着它们**：终端在手机上没法读，几个 pane 一起跑之后，谁在干活、谁在等你、各自做过什么，都不再一目了然。AgentMux 解决的是这一部分。
+
 ## 环境要求
 
 - **tmux** —— 每个终端就是一个 tmux 会话

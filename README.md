@@ -11,6 +11,39 @@ Terminals in the same project can run different CLIs and different models at
 the same time, which is the point: one pane on Claude, one on Codex, one on
 Cursor, all working in the same repo.
 
+## Why run more than one
+
+**Two flat subscriptions cost less than one metered seat.** Claude Code comes
+with Claude Pro at [$20/month](https://claude.com/pricing); Codex comes with
+ChatGPT Plus at [$20/month](https://learn.chatgpt.com/docs/pricing). In Cursor,
+third-party models like Claude and GPT are billed from a separate pool
+"charged at the model's API price", and Cursor's own docs put daily agent users
+at [$60–100/month in usage](https://cursor.com/docs/account/pricing) on top of
+the seat. Forty dollars, fixed, against twenty plus a number that moves.
+
+Metered billing also makes the bill depend on how many tokens the tool sends,
+not just which model answers — two tools pointed at the same model can cost
+very different amounts for the same task. One
+[public comparison](https://www.futureproofing.dev/resources/ai-native-team/claude-code-vs-cursor-token-efficiency-2026)
+of the same Next.js build measured 33K tokens through Claude Code against 188K
+through Cursor Agent. Read it with the caveats its authors give: a single
+untimed test, and one that mixes the models with the tools, since the two sides
+ran on Opus and GPT-5 respectively.
+
+**A limit on one is not a limit on all.** Both subscriptions meter in rolling
+windows with weekly caps — Codex prints its own remaining budget in its status
+line. With a second CLI already running in the next pane, hitting a window
+means switching panes rather than stopping.
+
+**The models are not interchangeable.** Having them side by side in one repo
+lets you put each on what it is good at, and get a second opinion on anything
+you are unsure about, without re-explaining the project.
+
+None of that needs this app — two tmux windows would do. What gets hard is
+watching them: terminals are unreadable on a phone, and with several panes
+running it stops being obvious which one is working, which is waiting on you,
+and what any of them have done. That is the part AgentMux is for.
+
 ## Requirements
 
 - **tmux** — every terminal is a tmux session
