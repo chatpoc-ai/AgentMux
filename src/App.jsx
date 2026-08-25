@@ -117,6 +117,7 @@ const I18N = {
     mentionHint: "↑↓ to choose, Enter to insert, Tab to add another",
     mentionSwitched: "Switched to {name}",
     mentionBroadcast: "Sent to {names}",
+    pickerFailed: "Could not open the directory picker.",
     english: "English",
     chinese: "中文",
     language: "Language",
@@ -246,6 +247,7 @@ const I18N = {
     mentionHint: "↑↓ 选择，Enter 插入，Tab 继续添加",
     mentionSwitched: "已切换到 {name}",
     mentionBroadcast: "已发送给 {names}",
+    pickerFailed: "目录选择器打开失败。",
     english: "English",
     chinese: "中文",
     language: "语言",
@@ -2537,7 +2539,9 @@ export default function App() {
       const roots = await loadPickerRoots();
       await openDirectory(roots[0]?.path || "");
     } catch (error) {
-      setStatus(error?.message || t("selectProjectFirst"));
+      // The picker failed to load; telling the reader to pick a project is a
+      // non sequitur when the thing that would let them pick is what broke.
+      setStatus(error?.message || t("pickerFailed"));
     }
   };
 
@@ -2553,7 +2557,7 @@ export default function App() {
       const roots = await loadPickerRoots();
       await openDirectory(roots[0]?.path || "");
     } catch (error) {
-      setStatus(error?.message || t("selectProjectFirst"));
+      setStatus(error?.message || t("pickerFailed"));
     }
   };
 
