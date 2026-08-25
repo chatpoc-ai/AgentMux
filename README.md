@@ -13,7 +13,8 @@ Cursor, all working in the same repo.
 
 Type `@` in the message box to address one of them by name. The message goes
 to that terminal and the view follows it, so switching agents mid-thought does
-not mean going back to the sidebar first.
+not mean going back to the sidebar first. `@one,two` sends the same message to
+both.
 
 ## Why run more than one
 

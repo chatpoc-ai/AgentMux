@@ -114,8 +114,9 @@ const I18N = {
       "Type command or text, @ to address a terminal, Enter to send, Shift+Enter for newline",
     mentionListLabel: "Terminals you can address",
     mentionEmpty: "No terminal matches",
-    mentionHint: "↑↓ to choose, Enter to insert",
+    mentionHint: "↑↓ to choose, Enter to insert, Tab to add another",
     mentionSwitched: "Switched to {name}",
+    mentionBroadcast: "Sent to {names}",
     english: "English",
     chinese: "中文",
     language: "Language",
@@ -242,8 +243,9 @@ const I18N = {
     inputPlaceholder: "输入命令或文本，@ 指定终端，Enter 发送，Shift+Enter 换行",
     mentionListLabel: "可指定的终端",
     mentionEmpty: "没有匹配的终端",
-    mentionHint: "↑↓ 选择，Enter 插入",
+    mentionHint: "↑↓ 选择，Enter 插入，Tab 继续添加",
     mentionSwitched: "已切换到 {name}",
+    mentionBroadcast: "已发送给 {names}",
     english: "English",
     chinese: "中文",
     language: "语言",
@@ -587,9 +589,15 @@ function buildMentionAliases(targets) {
   return aliases;
 }
 
+const MENTION_SEPARATOR = /[,，]/;
+
 /**
  * The "@..." token the caret currently sits in, or null. Requires whitespace
  * before the "@" so an email address in the message never opens the menu.
+ *
+ * A token can name several terminals, comma separated. `segmentStart` marks
+ * the name being typed right now — everything before it is already settled,
+ * and completing one name must not overwrite the others.
  */
 function findMentionQuery(text, caret) {
   const upto = String(text ?? "").slice(0, caret);
@@ -597,9 +605,13 @@ function findMentionQuery(text, caret) {
   if (at < 0) return null;
   const before = at > 0 ? upto[at - 1] : "";
   if (before && !/\s/.test(before)) return null;
-  const query = upto.slice(at + 1);
-  if (/[\s@]/.test(query)) return null;
-  return { start: at, end: caret, query };
+  const token = upto.slice(at + 1);
+  if (/[\s@]/.test(token)) return null;
+  let segmentStart = at + 1;
+  for (let i = 0; i < token.length; i += 1) {
+    if (MENTION_SEPARATOR.test(token[i])) segmentStart = at + 2 + i;
+  }
+  return { start: at, end: caret, segmentStart, query: upto.slice(segmentStart) };
 }
 
 /**
@@ -611,28 +623,57 @@ function findMentionQuery(text, caret) {
 const MENTION_BOUNDARY = /[,.:;!?'"、，。：；！？…（）()[\]【】「」『』]/;
 
 /**
- * First resolvable mention in the text, with the span it occupies so the
- * caller can lift it out. Unresolvable "@words" are left alone — they are
- * ordinary text, and rewriting them would be a surprise.
+ * Resolves one name, either exactly or as the longest prefix ending on a
+ * punctuation boundary. Longest first so "@agent-12" is never read as
+ * "@agent-1", and boundary-only so a handle is not clipped out of the middle
+ * of an ordinary word. Returns how much of the name was consumed.
  */
-function resolveMentionTarget(text, aliases) {
+function resolveMentionName(name, aliases) {
+  const exact = aliases.get(name.toLowerCase());
+  if (exact) return { target: exact, length: name.length };
+  for (let cut = name.length - 1; cut > 0; cut -= 1) {
+    if (!MENTION_BOUNDARY.test(name[cut])) continue;
+    const candidate = aliases.get(name.slice(0, cut).toLowerCase());
+    if (candidate) return { target: candidate, length: cut };
+  }
+  return null;
+}
+
+/**
+ * First resolvable mention in the text, with the span it occupies so the
+ * caller can lift it out. A token may address several terminals as
+ * "@one,two" — names are taken while they resolve, and the span stops at the
+ * first one that does not, so a stray comma stays in the message rather than
+ * silently swallowing words. Unresolvable "@words" are left alone entirely:
+ * they are ordinary text, and rewriting them would be a surprise.
+ */
+function resolveMentionTargets(text, aliases) {
   if (!aliases || !aliases.size) return null;
   const pattern = /(^|\s)@([^\s@]+)/g;
   const source = String(text ?? "");
   let match;
   while ((match = pattern.exec(source)) !== null) {
-    const raw = match[2];
+    const token = match[2];
     const start = match.index + match[1].length;
-    const exact = aliases.get(raw.toLowerCase());
-    if (exact) return { target: exact, start, end: start + 1 + raw.length };
-    // Longest prefix that ends on a punctuation boundary. Longest first so
-    // "@agent-12" is never read as "@agent-1", and boundary-only so a handle
-    // is not clipped out of the middle of an ordinary word.
-    for (let cut = raw.length - 1; cut > 0; cut -= 1) {
-      if (!MENTION_BOUNDARY.test(raw[cut])) continue;
-      const candidate = aliases.get(raw.slice(0, cut).toLowerCase());
-      if (candidate) return { target: candidate, start, end: start + 1 + cut };
+    const targets = [];
+    const seen = new Set();
+    let cursor = 0;
+    while (cursor < token.length) {
+      let stop = cursor;
+      while (stop < token.length && !MENTION_SEPARATOR.test(token[stop])) stop += 1;
+      const hit = resolveMentionName(token.slice(cursor, stop), aliases);
+      if (!hit) break;
+      if (!seen.has(hit.target.id)) {
+        seen.add(hit.target.id);
+        targets.push(hit.target);
+      }
+      cursor += hit.length;
+      // Only step over the separator when the name before it was whole; a
+      // boundary-trimmed name means the rest is prose, not another address.
+      if (cursor === stop && stop < token.length) cursor = stop + 1;
+      else break;
     }
+    if (targets.length) return { targets, start, end: start + 1 + cursor };
   }
   return null;
 }
@@ -2646,15 +2687,17 @@ export default function App() {
     return () => window.removeEventListener("resize", measure);
   }, [mentionMenu, composerText, bottomPanelHeight, sidebarWidth]);
 
-  const applyMention = (target) => {
+  const applyMention = (target, { keepOpen = false } = {}) => {
     if (!mentionMenu || !target) return;
-    const before = composerText.slice(0, mentionMenu.start);
+    // Replaces only the name being typed. Names already settled ahead of it
+    // in an "@one,two" token have to survive completing the next one.
+    const before = composerText.slice(0, mentionMenu.segmentStart);
     const after = composerText.slice(mentionMenu.end);
-    // The trailing space is what closes the token, so the menu does not
-    // immediately reopen on the handle that was just inserted.
-    const insert = `@${target.handle} `;
+    // A comma keeps the token open for another name; a space closes it, so
+    // the menu does not immediately reopen on the handle just inserted.
+    const insert = `${target.handle}${keepOpen ? "," : " "}`;
     setComposerText(`${before}${insert}${after}`);
-    setMentionMenu(null);
+    if (!keepOpen) setMentionMenu(null);
     const caret = before.length + insert.length;
     requestAnimationFrame(() => {
       const element = composerInputRef.current;
@@ -2665,46 +2708,60 @@ export default function App() {
   };
 
   const sendComposer = () => {
-    const mention = resolveMentionTarget(composerText, mentionAliases);
-    const target = mention?.target ?? null;
-    const projectId = target ? target.projectId : activeProjectId;
-    const terminalId = target ? target.id : activeTerminalId;
-    if (!projectId || !terminalId) {
+    const mention = resolveMentionTargets(composerText, mentionAliases);
+    const targets = mention?.targets ?? [];
+    // The first name is the one the view follows: only one pane can be on
+    // screen, and the first is the one the reader wrote down first.
+    const lead = targets[0] ?? null;
+    const fallbackReady = Boolean(activeProjectId && activeTerminalId);
+    if (!lead && !fallbackReady) {
       setStatus(t("terminalHint"));
       return;
     }
     // Addressing a terminal is also how you move to it: the reply lands in
     // that pane, and reading it should not need a second trip to the sidebar.
-    if (target && (projectId !== activeProjectId || terminalId !== activeTerminalId)) {
-      setActiveProjectId(projectId);
-      setActiveTerminalId(terminalId);
+    if (lead && (lead.projectId !== activeProjectId || lead.id !== activeTerminalId)) {
+      setActiveProjectId(lead.projectId);
+      setActiveTerminalId(lead.id);
     }
     const text = (mention ? stripMention(composerText, mention) : composerText).trim();
     if (!text) {
       // "@name" alone is a request to switch, not an empty message to send.
       setMentionMenu(null);
-      if (!target) return;
+      if (!lead) return;
       setComposerText("");
-      setStatus(t("mentionSwitched", { name: target.label }));
+      setStatus(t("mentionSwitched", { name: lead.label }));
       composerInputRef.current?.focus();
       return;
     }
-    send({
-      type: "emit_event",
-      projectId,
-      event: {
-        type: "user_message",
-        from: "browser",
-        to: terminalId,
-        text,
-        appendEnter: true,
-      },
-    });
-    send({
-      type: "request_snapshot",
-      projectId,
-      terminalId,
-    });
+    const recipients = targets.length
+      ? targets
+      : [{ projectId: activeProjectId, id: activeTerminalId }];
+    for (const recipient of recipients) {
+      send({
+        type: "emit_event",
+        projectId: recipient.projectId,
+        event: {
+          type: "user_message",
+          from: "browser",
+          to: recipient.id,
+          text,
+          appendEnter: true,
+        },
+      });
+      send({
+        type: "request_snapshot",
+        projectId: recipient.projectId,
+        terminalId: recipient.id,
+      });
+    }
+    // Only one pane is visible, so a broadcast has to say out loud where the
+    // other copies went.
+    if (targets.length > 1) {
+      setStatus(
+        t("mentionBroadcast", { names: targets.map((one) => one.label).join("、") }),
+      );
+    }
     setComposerText("");
     setMentionMenu(null);
     // Sending is a deliberate move to the present, so it re-arms the follow
@@ -2738,7 +2795,9 @@ export default function App() {
       if (event.key === "Enter" || event.key === "Tab") {
         if (event.nativeEvent.isComposing) return;
         event.preventDefault();
-        applyMention(mentionActive);
+        // Tab leaves the token open on a comma, so the next name can be picked
+        // without retyping the "@".
+        applyMention(mentionActive, { keepOpen: event.key === "Tab" });
         return;
       }
     }
