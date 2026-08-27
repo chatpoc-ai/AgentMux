@@ -10,6 +10,7 @@ const express = require("express");
 const WebSocket = require("ws");
 const {
   composeAgentPrompt,
+  languageName,
   ensureExtraInstructionFile,
   buildPromptVars,
   shSingleQuote,
@@ -432,6 +433,7 @@ class AgentMuxServer {
   }
 
   updateSettings(next) {
+    const previousLanguage = this.settings.language;
     this.settings = {
       ...defaultSettings(),
       ...this.settings,
@@ -443,7 +445,33 @@ class AgentMuxServer {
     }
     this.persistSettings();
     this.broadcast({ type: "settings_updated", settings: this.settings });
+    // The bootstrap carries the language, so panes started after this pick it
+    // up on their own. The ones already running were told the old language and
+    // would keep using it for the rest of their session.
+    if (this.settings.language !== previousLanguage) {
+      this.announceReplyLanguage(this.settings.language);
+    }
     return this.settings;
+  }
+
+  /**
+   * Tells every live pane which language the operator now reads in.
+   *
+   * This lands in each agent's prompt box as a turn, which is intrusive — but
+   * a setting that only takes effect on panes not yet created is a setting
+   * that appears not to work. Kept to one short line for that reason.
+   *
+   * @param {string} code
+   */
+  announceReplyLanguage(code) {
+    const line = `Reply-language change: write to the operator in ${languageName(
+      code,
+    )} from now on. No other change; do not restate this.`;
+    for (const project of this.projects.values()) {
+      for (const term of project.terminals) {
+        this.sendTextToTerminal(project.id, term.id, line, true);
+      }
+    }
   }
 
   persistSnapshot() {
@@ -665,6 +693,7 @@ class AgentMuxServer {
         cwdResolved: project.cwd,
         sessionName: term.name,
         port: PORT,
+        language: this.settings.language,
       });
       const expanded = composeAgentPrompt(project.baseDir, vars);
       const apiBase = `http://127.0.0.1:${PORT}`;
@@ -1021,6 +1050,7 @@ class AgentMuxServer {
       cwdResolved: project.cwd,
       sessionName: term.name,
       port: PORT,
+      language: this.settings.language,
     });
     const expanded = composeAgentPrompt(project.baseDir, vars);
     const apiBase = `http://127.0.0.1:${PORT}`;

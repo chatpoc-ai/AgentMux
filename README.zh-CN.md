@@ -102,7 +102,7 @@ agentmux message --to "Agent 2" --body -          # 从 stdin 读，适合多行
 | `AGENTMUX_LOG_MAX_BYTES` | 每终端输出日志上限（默认 2MB） |
 | `AGENTMUX_AGENT_INSTRUCTION_FILE` | 换用其他 bootstrap 指令文件 |
 
-项目级、可跨重启保留的指令放在 `~/.agentmux/projects/<id>/extra-instruction.md`；共用模板是 [`config/agent-instruction.md`](config/agent-instruction.md)。
+项目级、可跨重启保留的指令放在 `~/.agentmux/projects/<id>/extra-instruction.md`；共用模板是 [`config/agent-instruction.md`](config/agent-instruction.md)，其中 `{{LANGUAGE}}` 会展开成界面语言，让 agent 用你正在读的那种语言回答。在设置里改语言时，已经在跑的终端也会被告知。
 
 ## 工作原理
 

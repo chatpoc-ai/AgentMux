@@ -5,7 +5,7 @@ const path = require("path");
 
 const ROOT = path.join(__dirname, "..");
 
-const DEFAULT_INSTRUCTION = `You run inside AgentMux. Report only via HTTP: POST $AGENTMUX_API_BASE/api/events with X-AgentMux-Token: $AGENTMUX_TOKEN; emit done after work. Keep responses terse and technical. Use the pattern [thing] [action] [reason]. [next step]. Put that in payload.result. Do not print the token in chat.`;
+const DEFAULT_INSTRUCTION = `You run inside AgentMux. Report only via HTTP: POST $AGENTMUX_API_BASE/api/events with X-AgentMux-Token: $AGENTMUX_TOKEN; emit done after work. Keep responses terse and technical. Use the pattern [thing] [action] [reason]. [next step]. Put that in payload.result. Write to the operator in {{LANGUAGE}}. Do not print the token in chat.`;
 
 /** @param {string} p */
 function shSingleQuote(p) {
@@ -96,6 +96,20 @@ function ensureExtraInstructionFile(projectBaseDir) {
  * @param {string} o.sessionName
  * @param {number} o.port
  */
+/**
+ * Interface language code -> the name to put in front of an agent. The agents
+ * are told a language name, not a code: "zh" is a tag for software, and the
+ * thing reading this is a language model.
+ */
+const LANGUAGE_NAMES = {
+  en: "English",
+  zh: "Chinese (简体中文)",
+};
+
+function languageName(code) {
+  return LANGUAGE_NAMES[String(code || "").toLowerCase()] || LANGUAGE_NAMES.en;
+}
+
 function buildPromptVars(o) {
   const apiBase = `http://127.0.0.1:${o.port}`;
   return {
@@ -104,10 +118,12 @@ function buildPromptVars(o) {
     CWD: o.cwdResolved,
     SESSION_ID: o.sessionName,
     API_BASE: apiBase,
+    LANGUAGE: languageName(o.language),
   };
 }
 
 module.exports = {
+  languageName,
   loadInstructionTemplate,
   expandTemplate,
   composeAgentPrompt,

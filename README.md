@@ -145,7 +145,9 @@ anything containing quotes or newlines. Run `agentmux --help` for the rest.
 
 Per-project instructions that survive restarts go in
 `~/.agentmux/projects/<id>/extra-instruction.md`; the shared template is
-[`config/agent-instruction.md`](config/agent-instruction.md).
+[`config/agent-instruction.md`](config/agent-instruction.md), where `{{LANGUAGE}}`
+expands to the interface language so agents answer in the one you are reading.
+Changing it in Settings tells the panes already running, too.
 
 ## How it works
 
